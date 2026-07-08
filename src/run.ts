@@ -519,18 +519,6 @@ export async function run(
     );
   }
 
-  // Validate: copyToWorktree is incompatible with head strategy
-  if (
-    effectiveBranchType === "head" &&
-    options.copyToWorktree &&
-    options.copyToWorktree.length > 0
-  ) {
-    throw new Error(
-      "copyToWorktree is not supported with head branch strategy. " +
-        "In head mode the host working directory is bind-mounted directly.",
-    );
-  }
-
   // Validate: resumeSession + maxIterations > 1 is not allowed
   if (options.resumeSession && maxIterations > 1) {
     throw new Error(
@@ -631,8 +619,8 @@ export async function run(
     getCurrentBranch(hostRepoDir),
   );
 
-  // When in merge-to-head mode, generate a temporary branch name.
-  // In head mode, use the host's current branch directly (no worktree).
+  // Head mode preserves the public branch label while the factory runs the
+  // agent in a temporary worktree forked from the current HEAD.
   const resolvedBranch =
     effectiveBranchType === "head"
       ? currentHostBranch
@@ -733,17 +721,12 @@ export async function run(
       );
     }
 
-    // In head mode, pass the host branch so SandboxLifecycle skips the merge step.
-    // In merge-to-head mode, branch is undefined (triggers merge). In branch mode, it's the explicit branch.
-    const orchestrateBranch =
-      effectiveBranchType === "head" ? currentHostBranch : branch;
-
     const orchestrateResult = yield* orchestrate({
       hostRepoDir,
       iterations: maxIterations,
       hooks,
       prompt: resolvedPrompt,
-      branch: orchestrateBranch,
+      branch,
       provider,
       completionSignal: options.completionSignal,
       idleTimeoutSeconds: options.idleTimeoutSeconds,

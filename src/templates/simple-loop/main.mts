@@ -26,10 +26,10 @@ await run({
   // per run, or set it to 1 for a single-shot mode.
   maxIterations: 3,
 
-  // Branch strategy — merge-to-head creates a temporary branch for the agent
+  // Branch strategy - merge-to-head creates a temporary branch for the agent
   // to work on, then merges the result back to HEAD when the run completes.
-  // This is required when using copyToWorktree, since head mode bind-mounts
-  // the host directory directly (no worktree to copy into).
+  // Head mode also uses a temporary worktree, but this template keeps
+  // merge-to-head explicit.
   branchStrategy: { type: "merge-to-head" },
 
   // Copy node_modules from the host into the worktree before the sandbox

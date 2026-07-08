@@ -209,8 +209,8 @@ export interface Worktree {
  * Creates a git worktree as an independent, first-class worktree.
  * Returns a Worktree handle with close() and [Symbol.asyncDispose]().
  *
- * Only accepts 'branch' and 'merge-to-head' strategies — 'head' is a
- * compile-time type error since head means no worktree.
+ * Only accepts 'branch' and 'merge-to-head' strategies. Top-level 'head'
+ * strategy creates its own temporary worktree, so it is not valid here.
  */
 export const createWorktree = async (
   options: CreateWorktreeOptions,

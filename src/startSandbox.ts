@@ -52,7 +52,7 @@ export interface StartSandboxNoSandboxOptions {
   provider: NoSandboxProvider;
   hostRepoDir: string;
   env: Record<string, string>;
-  /** Host-side worktree path the agent will run in. Equal to hostRepoDir in head mode. */
+  /** Host-side worktree path the agent will run in. */
   worktreeOrRepoPath: string;
   gitMounts?: undefined;
   repoDir?: undefined;

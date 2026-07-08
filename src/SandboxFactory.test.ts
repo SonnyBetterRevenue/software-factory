@@ -543,19 +543,25 @@ describe("WorktreeDockerSandboxFactory", () => {
       displayRef = Ref.unsafeMake<ReadonlyArray<DisplayEntry>>([]),
     ) => makeLayer(displayRef, { type: "head" });
 
-    it("does not create a worktree", async () => {
+    it("runs head mode in a temporary worktree and cleans it up", async () => {
+      let receivedInfo: { hostWorktreePath?: string } | undefined;
       await Effect.runPromise(
         Effect.gen(function* () {
           const factory = yield* SandboxFactory;
-          yield* factory.withSandbox(() => Effect.void);
+          yield* factory.withSandbox((info) => {
+            receivedInfo = info;
+            return Effect.void;
+          });
         }).pipe(Effect.provide(makeHeadLayer())),
       );
 
       const worktree = await findCreatedWorktree(hostRepoDir);
+      expect(receivedInfo?.hostWorktreePath).not.toBe(hostRepoDir);
+      expect(receivedInfo?.hostWorktreePath).toContain(".sandcastle");
       expect(worktree).toBeUndefined();
     });
 
-    it("passes host repo dir and git mounts to provider", async () => {
+    it("passes worktree dir and git mounts to provider", async () => {
       await Effect.runPromise(
         Effect.gen(function* () {
           const factory = yield* SandboxFactory;
@@ -565,13 +571,21 @@ describe("WorktreeDockerSandboxFactory", () => {
 
       expect(mockProvider.createCalls).toHaveLength(1);
       const opts = mockProvider.createCalls[0];
+      expect(opts.mounts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            hostPath: expect.stringContaining(".sandcastle"),
+            sandboxPath: SANDBOX_REPO_DIR,
+          }),
+        ]),
+      );
       expect(opts.mounts).toContainEqual({
-        hostPath: hostRepoDir,
-        sandboxPath: SANDBOX_REPO_DIR,
-      });
-      expect(opts.mounts).toContainEqual({
-        hostPath: `${hostRepoDir}/.git`,
-        sandboxPath: `${hostRepoDir}/.git`,
+        hostPath: expect.stringContaining(
+          `${hostRepoDir.replaceAll("\\", "/")}/.git`,
+        ),
+        sandboxPath: expect.stringContaining(
+          `${hostRepoDir.replaceAll("\\", "/")}/.git`,
+        ),
       });
     });
 
@@ -587,7 +601,7 @@ describe("WorktreeDockerSandboxFactory", () => {
       expect(result.value).toBe("done");
     });
 
-    it("passes hostWorktreePath pointing to host repo dir", async () => {
+    it("passes hostWorktreePath pointing to the temporary worktree", async () => {
       let receivedInfo: { hostWorktreePath?: string } | undefined;
       await Effect.runPromise(
         Effect.gen(function* () {
@@ -599,7 +613,8 @@ describe("WorktreeDockerSandboxFactory", () => {
         }).pipe(Effect.provide(makeHeadLayer())),
       );
 
-      expect(receivedInfo?.hostWorktreePath).toBe(hostRepoDir);
+      expect(receivedInfo?.hostWorktreePath).not.toBe(hostRepoDir);
+      expect(receivedInfo?.hostWorktreePath).toContain(".sandcastle");
     });
   });
 
@@ -991,7 +1006,7 @@ describe("WorktreeDockerSandboxFactory — no-sandbox provider", () => {
     tempDirs.length = 0;
   });
 
-  it("head mode: does not create a worktree and runs in hostRepoDir", async () => {
+  it("head mode: creates a worktree, runs in it, and cleans up on success", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "sandcastle-test-"));
     tempDirs.push(hostDir);
     await initRepoWithCommit(hostDir);
@@ -1005,7 +1020,9 @@ describe("WorktreeDockerSandboxFactory — no-sandbox provider", () => {
         yield* factory.withSandbox((info, sandbox) => {
           receivedInfo = info;
           return Effect.gen(function* () {
-            const r = yield* sandbox.exec("cat hello.txt");
+            const r = yield* sandbox.exec(
+              `node -e "process.stdout.write(require('fs').readFileSync('hello.txt','utf8'))"`,
+            );
             execOut = r.stdout.trim();
           });
         });
@@ -1014,7 +1031,8 @@ describe("WorktreeDockerSandboxFactory — no-sandbox provider", () => {
 
     const worktree = await findCreatedWorktree(hostDir);
     expect(worktree).toBeUndefined();
-    expect(receivedInfo?.hostWorktreePath).toBe(hostDir);
+    expect(receivedInfo?.hostWorktreePath).not.toBe(hostDir);
+    expect(receivedInfo?.hostWorktreePath).toContain(".sandcastle");
     expect(execOut).toBe("hi");
   });
 

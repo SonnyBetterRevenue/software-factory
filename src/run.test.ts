@@ -475,22 +475,6 @@ describe("forkSession validation", () => {
   });
 });
 
-describe("copyToWorktree with head branch strategy", () => {
-  it("throws a runtime error when copyToWorktree is provided with head strategy", async () => {
-    await expect(
-      run({
-        agent: claudeCode("claude-opus-4-8"),
-        sandbox: testSandbox,
-        prompt: "test",
-        branchStrategy: { type: "head" },
-        copyToWorktree: [".env"],
-      }),
-    ).rejects.toThrow(
-      "copyToWorktree is not supported with head branch strategy",
-    );
-  });
-});
-
 describe("branchStrategy on RunOptions", () => {
   it("throws when head strategy is used with an isolated provider", async () => {
     const isolatedSandbox = sandcastle.createIsolatedSandboxProvider({

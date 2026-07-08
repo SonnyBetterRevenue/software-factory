@@ -477,7 +477,7 @@ describe("interactive()", () => {
 
   // --- Branch strategy tests ---
 
-  it("head strategy: commits land on current branch directly", async () => {
+  it("head strategy: commits merge back to the current branch", async () => {
     const provider = makeTestProvider(async (_args, opts) => {
       const cwd = opts.cwd!;
       execSync('echo "head change" > headfile.txt', { cwd });
@@ -500,7 +500,13 @@ describe("interactive()", () => {
 
     expect(result.branch).toBe(currentBranch);
     expect(result.commits.length).toBe(1);
-  });
+
+    const log = execSync("git log --oneline -1", {
+      cwd: hostDir,
+      encoding: "utf-8",
+    });
+    expect(log).toContain("head commit");
+  }, 10_000);
 
   it("merge-to-head strategy: commits merge back to head", async () => {
     const provider = makeTestProvider(async (_args, opts) => {
@@ -616,18 +622,22 @@ describe("interactive()", () => {
 
   // --- copyToWorktree tests ---
 
-  it("throws when copyToWorktree used with head strategy", async () => {
-    const provider = makeTestProvider(async () => ({ exitCode: 0 }));
+  it("runs head strategy interactive sessions in a worktree", async () => {
+    let interactiveCwd = "";
 
-    await expect(
-      interactive({
-        agent: claudeCode("claude-opus-4-8"),
-        sandbox: provider,
-        prompt: "test",
-        branchStrategy: { type: "head" },
-        copyToWorktree: ["node_modules"],
-      }),
-    ).rejects.toThrow("copyToWorktree is not supported with head");
+    const provider = makeTestProvider(async (_args, opts) => {
+      interactiveCwd = opts.cwd ?? "";
+      return { exitCode: 0 };
+    });
+
+    await interactive({
+      agent: claudeCode("claude-opus-4-8"),
+      sandbox: provider,
+      prompt: "test",
+      branchStrategy: { type: "head" },
+    });
+
+    expect(interactiveCwd.replaceAll("\\", "/")).toContain(".sandcastle");
   });
 
   // --- AbortSignal tests ---

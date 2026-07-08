@@ -242,7 +242,7 @@ export interface NoSandboxProvider {
 
 // ---------- Branch strategy types ----------
 
-/** Head strategy: agent writes directly to host working directory. Bind-mount only. */
+/** Head strategy: temporary worktree forked from the host working directory's current HEAD. */
 export interface HeadBranchStrategy {
   readonly type: "head";
 }

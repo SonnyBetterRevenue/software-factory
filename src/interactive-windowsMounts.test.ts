@@ -109,11 +109,13 @@ describe("interactive() Windows mount patching", () => {
     const worktreePath = call[1];
     const sandboxRepoDir = call[2];
     expect(Array.isArray(gitMounts)).toBe(true);
-    expect(worktreePath).toContain(".sandcastle/worktrees");
+    expect(worktreePath.replaceAll("\\", "/")).toContain(
+      ".sandcastle/worktrees",
+    );
     expect(sandboxRepoDir).toBe(SANDBOX_REPO_DIR);
-  });
+  }, 10_000);
 
-  it("calls patchGitMountsForWindows with hostRepoDir as worktreeHostPath in head mode", async () => {
+  it("calls patchGitMountsForWindows with worktreePath in head mode", async () => {
     hostDir = await mkdtemp(join(tmpdir(), "wm-test-interactive-head-"));
     await initRepo(hostDir);
     await commitFile(hostDir, "init.txt", "init", "initial commit");
@@ -132,7 +134,7 @@ describe("interactive() Windows mount patching", () => {
     const call = mockPatchGitMountsForWindows.mock.calls[0]!;
     const worktreePath = call[1];
     const sandboxRepoDir = call[2];
-    expect(worktreePath).toBe(hostDir);
+    expect(worktreePath.replaceAll("\\", "/")).toContain(".sandcastle");
     expect(sandboxRepoDir).toBe(SANDBOX_REPO_DIR);
   });
 });

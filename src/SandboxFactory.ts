@@ -303,7 +303,6 @@ export const WorktreeDockerSandboxFactory = {
         timeouts,
       } = yield* SandboxConfig;
 
-      const isHeadMode = branchStrategy.type === "head";
       const branch =
         branchStrategy.type === "branch" ? branchStrategy.branch : undefined;
       const baseBranch =
@@ -343,49 +342,7 @@ export const WorktreeDockerSandboxFactory = {
           if (sandboxProvider.tag === "none") {
             let preservedPath: string | undefined;
 
-            // Head mode: use hostRepoDir directly, no worktree.
-            if (isHeadMode) {
-              return (
-                hooks?.host?.onWorktreeReady?.length
-                  ? runHostHooks(
-                      hooks.host.onWorktreeReady,
-                      hostRepoDir,
-                      signal,
-                    )
-                  : Effect.void
-              ).pipe(
-                Effect.andThen(
-                  Effect.acquireUseRelease(
-                    startSandbox({
-                      provider: sandboxProvider,
-                      hostRepoDir,
-                      env,
-                      worktreeOrRepoPath: hostRepoDir,
-                    }),
-                    ({ sandbox, worktreePath }) =>
-                      makeEffect(
-                        {
-                          hostWorktreePath: hostRepoDir,
-                          sandboxRepoPath: worktreePath,
-                        },
-                        sandbox,
-                      ) as Effect.Effect<A, E | SandboxError, R>,
-                    ({ handle }) =>
-                      Effect.tryPromise({
-                        try: () => handle.close(),
-                        catch: () => undefined,
-                      }).pipe(Effect.orDie),
-                  ).pipe(
-                    Effect.map((value) => ({
-                      value,
-                      preservedWorktreePath: undefined,
-                    })),
-                  ),
-                ),
-              );
-            }
-
-            // Worktree mode (merge-to-head or explicit branch).
+            // Worktree mode (head, merge-to-head, or explicit branch).
             // Nested so the worktree is always cleaned up (outer release) even
             // when copying, hooks, or sandbox start fail. The provider handle is
             // closed by the inner release, which only runs once it exists.
@@ -522,67 +479,7 @@ export const WorktreeDockerSandboxFactory = {
             );
           }
 
-          if (isHeadMode) {
-            // Head mode: bind-mount host directory directly, no worktree
-            const gitPath = join(hostRepoDir, ".git");
-            return (
-              hooks?.host?.onWorktreeReady?.length
-                ? runHostHooks(hooks.host.onWorktreeReady, hostRepoDir, signal)
-                : Effect.void
-            ).pipe(
-              Effect.andThen(resolveGitMounts(gitPath)),
-              Effect.provideService(FileSystem.FileSystem, fileSystem),
-              Effect.mapError(
-                (e) =>
-                  new WorktreeError({
-                    message: `Failed to resolve git mounts: ${e}`,
-                  }) as E | SandboxError,
-              ),
-              Effect.flatMap((gitMounts) =>
-                // Patch git mounts for Windows worktree compatibility (ADR-0006)
-                patchGitMountsForWindows(
-                  gitMounts,
-                  hostRepoDir,
-                  SANDBOX_REPO_DIR,
-                ),
-              ),
-              Effect.flatMap((gitMounts) =>
-                Effect.acquireUseRelease(
-                  startSandbox({
-                    provider: sandboxProvider,
-                    hostRepoDir,
-                    env,
-                    worktreeOrRepoPath: hostRepoDir,
-                    gitMounts,
-                    repoDir: SANDBOX_REPO_DIR,
-                  }),
-                  // Use
-                  ({ sandbox, worktreePath, handle }) =>
-                    makeEffect(
-                      {
-                        hostWorktreePath: hostRepoDir,
-                        sandboxRepoPath: worktreePath,
-                        bindMountHandle: handle as BindMountSandboxHandle,
-                      },
-                      sandbox,
-                    ) as Effect.Effect<A, E | SandboxError, R>,
-                  // Release
-                  ({ handle }) =>
-                    Effect.tryPromise({
-                      try: () => handle.close(),
-                      catch: () => undefined,
-                    }).pipe(Effect.orDie),
-                ).pipe(
-                  Effect.map((value) => ({
-                    value,
-                    preservedWorktreePath: undefined,
-                  })),
-                ),
-              ),
-            );
-          }
-
-          // Worktree mode (merge-to-head or explicit branch)
+          // Worktree mode (head, merge-to-head, or explicit branch)
           // Populated by the release phase when a worktree is preserved on failure,
           // so we can attach the path to recognized error types before they propagate.
           let preservedWorktreePath: string | undefined;
