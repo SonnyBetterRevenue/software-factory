@@ -140,14 +140,14 @@ jobs:
         if: steps.shape.outputs.proceed == 'true' && steps.preflight.outputs.refused != 'true'
         run: npm run build
 
-      - name: Install Claude Code
+      - name: Build Sandcastle image
         if: steps.shape.outputs.proceed == 'true' && steps.preflight.outputs.refused != 'true'
-        run: npm install -g @anthropic-ai/claude-code
+        run: npx sandcastle docker build-image
 
       - name: Run implementation agent
         if: steps.shape.outputs.proceed == 'true' && steps.preflight.outputs.refused != 'true'
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CODEX_AUTH_JSON_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
           BRANCH: ${{ steps.branch.outputs.name }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: npx tsx .sandcastle/agent-workflows/implement/implement.ts
