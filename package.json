@@ -10,6 +10,10 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
+    "./factory-policy": {
+      "import": "./dist/factory-policy.js",
+      "types": "./dist/factory-policy.d.ts"
+    },
     "./sandboxes/docker": {
       "import": "./dist/sandboxes/docker.js",
       "types": "./dist/sandboxes/docker.d.ts"
@@ -59,7 +63,7 @@
   "packageManager": "npm@10.9.2",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mattpocock/sandcastle"
+    "url": "https://github.com/SonnyBetterRevenue/software-factory"
   },
   "license": "MIT",
   "devDependencies": {

@@ -40,6 +40,15 @@ vi.mock(
   { virtual: true },
 );
 
+vi.mock("./index.js", () => ({
+  codex: (...args: unknown[]) => mockCodex(...args),
+  run: mockRun,
+}));
+
+vi.mock("./sandboxes/docker.js", () => ({
+  docker: mockDocker,
+}));
+
 const root = process.cwd();
 const read = (relativePath: string) =>
   readFileSync(join(root, relativePath), "utf8");
@@ -86,12 +95,25 @@ const workflows = [
 describe("active Software Factory Codex policy", () => {
   it("selects Codex gpt-5.5 low through a shared active-route policy", () => {
     const common = read(".sandcastle/agent-workflows/shared/common.ts");
+    const source = read("src/factory-policy.ts");
+    const packageJson = JSON.parse(read("package.json")) as {
+      exports: Record<string, unknown>;
+    };
 
-    expect(common).toContain('FACTORY_MODEL = "gpt-5.5"');
-    expect(common).toContain('FACTORY_EFFORT = "low"');
-    expect(common).toContain("sandcastle.codex(FACTORY_MODEL");
-    expect(common).toContain("FACTORY_HEARTBEAT_SECONDS = 30");
-    expect(common).toContain("FACTORY_VISIBLE_INACTIVITY_SECONDS = 60");
+    expect(common.trim()).toBe(
+      'export * from "../../../src/factory-policy.js";',
+    );
+    expect(source).toContain('FACTORY_MODEL = "gpt-5.5"');
+    expect(source).toContain('FACTORY_EFFORT = "low"');
+    expect(source).toContain("sandcastle.codex(FACTORY_MODEL");
+    expect(source).toContain("FACTORY_HEARTBEAT_SECONDS = 30");
+    expect(source).toContain("FACTORY_VISIBLE_INACTIVITY_SECONDS = 60");
+    expect(packageJson.exports).toMatchObject({
+      "./factory-policy": {
+        import: "./dist/factory-policy.js",
+        types: "./dist/factory-policy.d.ts",
+      },
+    });
 
     for (const route of activeRoutes) {
       const contents = read(route);
