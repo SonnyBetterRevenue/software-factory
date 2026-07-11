@@ -28,6 +28,15 @@ export type AgentStreamEvent =
       readonly timestamp: Date;
     }
   | {
+      readonly type: "heartbeat";
+      readonly state: "provider_wait" | "tool_running";
+      readonly elapsedMs: number;
+      readonly lastVisibleEventAt?: Date;
+      readonly visibleSilenceMs: number;
+      readonly iteration: number;
+      readonly timestamp: Date;
+    }
+  | {
       readonly type: "raw";
       readonly line: string;
       readonly iteration: number;

@@ -222,7 +222,7 @@ const result = await run({
     // produces. Errors thrown by the callback are swallowed so a broken
     // forwarder cannot kill the run.
     onAgentStreamEvent: (event) => {
-      // event is { type: "text" | "toolCall" | "raw", iteration, timestamp, ... }
+      // event is { type: "text" | "toolCall" | "heartbeat" | "raw", iteration, timestamp, ... }
       myLogger.info(event);
     },
     // Optional: append every raw stdout line the agent emits to the same
@@ -246,6 +246,14 @@ const result = await run({
   // subsequent output line so trailing data is still captured. Default: 60
   completionTimeoutSeconds: 60,
 
+  // Emit a heartbeat while the provider call is live. Heartbeats report
+  // whether the provider is waiting or currently running a tool. Default: 30
+  heartbeatIntervalSeconds: 30,
+
+  // Timeout visible inactivity only. Resets on parsed text and tool calls,
+  // but not on raw provider noise or terminal result events. Disabled by default.
+  visibleInactivityTimeoutSeconds: 180,
+
   // Structured output — extract a typed payload from the agent's stdout.
   // Requires maxIterations === 1 and the tag must appear in the prompt.
   // output: Output.object({ tag: "result", schema: z.object({ answer: z.number() }) }),
@@ -256,6 +264,7 @@ console.log(result.iterations.length); // number of iterations executed
 console.log(result.completionSignal); // matched signal string, or undefined if none fired
 console.log(result.commits); // array of { sha } for commits created
 console.log(result.branch); // target branch name
+console.log(result.timing?.heartbeatCount); // provider heartbeats across the run
 ```
 
 ### `createSandbox()` — reusable sandbox
@@ -831,27 +840,29 @@ Removes the Podman image.
 
 ### `RunOptions`
 
-| Option                     | Type               | Default                       | Description                                                                                                                                                                                                                  |
-| -------------------------- | ------------------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent`                    | AgentProvider      | —                             | **Required.** Agent provider (e.g. `claudeCode("claude-opus-4-8")`, `pi("claude-sonnet-4-6")`, `codex("gpt-5.4")`, `cursor("composer-2")`, `opencode("opencode/big-pickle")`, `copilot("claude-sonnet-4.5")`)                |
-| `sandbox`                  | SandboxProvider    | —                             | **Required.** Sandbox provider (e.g. `docker()`, `podman()`, `docker({ imageName: "sandcastle:local" })`)                                                                                                                    |
-| `cwd`                      | string             | `process.cwd()`               | Host repo directory — anchor for `.sandcastle/` artifacts and git operations. Relative paths resolve against `process.cwd()`.                                                                                                |
-| `prompt`                   | string             | —                             | Inline prompt (mutually exclusive with `promptFile`)                                                                                                                                                                         |
-| `promptFile`               | string             | —                             | Path to prompt file (mutually exclusive with `prompt`). Resolves against `process.cwd()`, **not** `cwd`.                                                                                                                     |
-| `maxIterations`            | number             | `1`                           | Maximum iterations to run                                                                                                                                                                                                    |
-| `hooks`                    | SandboxHooks       | —                             | Lifecycle hooks (`host.*`, `sandbox.*`)                                                                                                                                                                                      |
-| `name`                     | string             | —                             | Display name for the run, shown as a prefix in log output                                                                                                                                                                    |
-| `promptArgs`               | PromptArgs         | —                             | Key-value map for `{{KEY}}` placeholder substitution                                                                                                                                                                         |
-| `branchStrategy`           | BranchStrategy     | per-provider default          | Branch strategy: `{ type: 'head' }`, `{ type: 'merge-to-head' }`, or `{ type: 'branch', branch: '…' }`                                                                                                                       |
-| `copyToWorktree`           | string[]           | —                             | Host-relative file paths to copy into the sandbox before start (not supported with `branchStrategy: { type: 'head' }`)                                                                                                       |
-| `logging`                  | object             | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                                                                                                                                                                             |
-| `completionSignal`         | string \| string[] | `<promise>COMPLETE</promise>` | String or array of strings the agent emits to stop the iteration loop early                                                                                                                                                  |
-| `idleTimeoutSeconds`       | number             | `600`                         | Idle timeout in seconds — resets on each agent output event                                                                                                                                                                  |
-| `completionTimeoutSeconds` | number             | `60`                          | Grace window in seconds after the completion signal is observed but the agent process has not exited (hanging process). See [Hanging processes after the completion signal](#hanging-processes-after-the-completion-signal). |
-| `resumeSession`            | string             | —                             | Resume a prior session by ID for agents that support resume. Incompatible with `maxIterations > 1`. Session file must exist on host.                                                                                         |
-| `signal`                   | AbortSignal        | —                             | Cancel the run when aborted. Kills the in-flight agent subprocess and cancels lifecycle hooks; the worktree is preserved on disk. Rejects with `signal.reason`.                                                              |
-| `timeouts`                 | Timeouts           | —                             | Override default timeouts for built-in lifecycle steps: `copyToWorktreeMs` (60 000), `gitSetupMs` (10 000), `commitCollectionMs` (30 000), `mergeToHostMs` (30 000).                                                         |
-| `output`                   | OutputDefinition   | —                             | Structured output definition (`Output.object(…)` or `Output.string(…)`). Requires `maxIterations === 1`. See [Structured output](#structured-output).                                                                        |
+| Option                            | Type               | Default                       | Description                                                                                                                                                                                                                  |
+| --------------------------------- | ------------------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent`                           | AgentProvider      | —                             | **Required.** Agent provider (e.g. `claudeCode("claude-opus-4-8")`, `pi("claude-sonnet-4-6")`, `codex("gpt-5.4")`, `cursor("composer-2")`, `opencode("opencode/big-pickle")`, `copilot("claude-sonnet-4.5")`)                |
+| `sandbox`                         | SandboxProvider    | —                             | **Required.** Sandbox provider (e.g. `docker()`, `podman()`, `docker({ imageName: "sandcastle:local" })`)                                                                                                                    |
+| `cwd`                             | string             | `process.cwd()`               | Host repo directory — anchor for `.sandcastle/` artifacts and git operations. Relative paths resolve against `process.cwd()`.                                                                                                |
+| `prompt`                          | string             | —                             | Inline prompt (mutually exclusive with `promptFile`)                                                                                                                                                                         |
+| `promptFile`                      | string             | —                             | Path to prompt file (mutually exclusive with `prompt`). Resolves against `process.cwd()`, **not** `cwd`.                                                                                                                     |
+| `maxIterations`                   | number             | `1`                           | Maximum iterations to run                                                                                                                                                                                                    |
+| `hooks`                           | SandboxHooks       | —                             | Lifecycle hooks (`host.*`, `sandbox.*`)                                                                                                                                                                                      |
+| `name`                            | string             | —                             | Display name for the run, shown as a prefix in log output                                                                                                                                                                    |
+| `promptArgs`                      | PromptArgs         | —                             | Key-value map for `{{KEY}}` placeholder substitution                                                                                                                                                                         |
+| `branchStrategy`                  | BranchStrategy     | per-provider default          | Branch strategy: `{ type: 'head' }`, `{ type: 'merge-to-head' }`, or `{ type: 'branch', branch: '…' }`                                                                                                                       |
+| `copyToWorktree`                  | string[]           | —                             | Host-relative file paths to copy into the sandbox before start (not supported with `branchStrategy: { type: 'head' }`)                                                                                                       |
+| `logging`                         | object             | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                                                                                                                                                                             |
+| `completionSignal`                | string \| string[] | `<promise>COMPLETE</promise>` | String or array of strings the agent emits to stop the iteration loop early                                                                                                                                                  |
+| `idleTimeoutSeconds`              | number             | `600`                         | Idle timeout in seconds — resets on each agent output event                                                                                                                                                                  |
+| `completionTimeoutSeconds`        | number             | `60`                          | Grace window in seconds after the completion signal is observed but the agent process has not exited (hanging process). See [Hanging processes after the completion signal](#hanging-processes-after-the-completion-signal). |
+| `heartbeatIntervalSeconds`        | number             | `30`                          | Emit periodic heartbeat events while the provider call is live                                                                                                                                                               |
+| `visibleInactivityTimeoutSeconds` | number             | —                             | Timeout in seconds for visible progress only. Resets on parsed text/tool-call events, not raw provider noise                                                                                                                 |
+| `resumeSession`                   | string             | —                             | Resume a prior session by ID for agents that support resume. Incompatible with `maxIterations > 1`. Session file must exist on host.                                                                                         |
+| `signal`                          | AbortSignal        | —                             | Cancel the run when aborted. Kills the in-flight agent subprocess and cancels lifecycle hooks; the worktree is preserved on disk. Rejects with `signal.reason`.                                                              |
+| `timeouts`                        | Timeouts           | —                             | Override default timeouts for built-in lifecycle steps: `copyToWorktreeMs` (60 000), `gitSetupMs` (10 000), `commitCollectionMs` (30 000), `mergeToHostMs` (30 000).                                                         |
+| `output`                          | OutputDefinition   | —                             | Structured output definition (`Output.object(…)` or `Output.string(…)`). Requires `maxIterations === 1`. See [Structured output](#structured-output).                                                                        |
 
 ### `RunResult`
 
@@ -863,15 +874,37 @@ Removes the Podman image.
 | `commits`          | `{ sha }[]`         | Commits created during the run                                     |
 | `branch`           | string              | Target branch name                                                 |
 | `logFilePath`      | string?             | Path to the log file (only when logging to a file)                 |
+| `timing`           | `RunTimingSummary`? | Compact timing summary for the run and each iteration              |
 | `output`           | T?                  | Typed structured output (only present when `output` option is set) |
 
 ### `IterationResult`
 
-| Field             | Type              | Description                                                                                                                         |
-| ----------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `sessionId`       | string?           | Agent session ID from the provider stream, or `undefined` if the provider does not emit one                                         |
-| `sessionFilePath` | string?           | Absolute host path to the captured session JSONL, or `undefined` when capture is off                                                |
-| `usage`           | `IterationUsage`? | Token usage snapshot from the last assistant message, or `undefined` when capture is off or provider does not support usage parsing |
+| Field             | Type                      | Description                                                                                                                         |
+| ----------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `sessionId`       | string?                   | Agent session ID from the provider stream, or `undefined` if the provider does not emit one                                         |
+| `sessionFilePath` | string?                   | Absolute host path to the captured session JSONL, or `undefined` when capture is off                                                |
+| `usage`           | `IterationUsage`?         | Token usage snapshot from the last assistant message, or `undefined` when capture is off or provider does not support usage parsing |
+| `timing`          | `IterationTimingSummary`? | Provider timing summary for that iteration                                                                                          |
+
+### `AgentStreamEvent`
+
+`logging: { type: "file", onAgentStreamEvent }` emits four public event shapes:
+
+- `text`: parsed visible assistant text
+- `toolCall`: parsed tool invocation with formatted args
+- `heartbeat`: liveness event with `state`, `elapsedMs`, `visibleSilenceMs`, and optional `lastVisibleEventAt`
+- `raw`: raw stdout line before parsing
+
+### `RunTimingSummary`
+
+`RunResult.timing` reports aggregate provider timing for the full run plus one entry per iteration in `iterations`:
+
+- `providerWaitMs`: time spent waiting on provider output
+- `toolRunningMs`: time spent in parsed tool execution
+- `longestVisibleSilenceMs`: longest gap without visible text/tool progress
+- `heartbeatCount`: heartbeats emitted during the run
+- `totalProviderMs`: total wall-clock provider time
+- `outcome`: `success`, `completion_timeout`, `idle_timeout`, `visible_inactivity_timeout`, or `dead_provider`
 
 ### `IterationUsage`
 

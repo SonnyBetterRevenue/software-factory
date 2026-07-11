@@ -36,7 +36,7 @@ import {
   buildLogFilename,
   printFileDisplayStartup,
 } from "./run.js";
-import type { LoggingOption } from "./run.js";
+import type { LoggingOption, RunTimingSummary } from "./run.js";
 import { orchestrate, type IterationResult } from "./Orchestrator.js";
 import { agentStreamEmitterLayer } from "./AgentStreamEmitter.js";
 import { resolveEnv } from "./EnvResolver.js";
@@ -134,6 +134,13 @@ export interface WorktreeRunOptions {
   readonly idleTimeoutSeconds?: number;
   /** Grace window in seconds after a completion signal is observed but the agent process has not exited. See ADR 0019. Default: 60. */
   readonly completionTimeoutSeconds?: number;
+  /** Emit a visible heartbeat while the provider call is live. Default: 30 seconds. */
+  readonly heartbeatIntervalSeconds?: number;
+  /**
+   * Timeout in seconds for visible inactivity only (displayed text/tool progress).
+   * Raw/internal stream noise does not reset this timeout. Disabled by default.
+   */
+  readonly visibleInactivityTimeoutSeconds?: number;
   /** Optional name for the run. */
   readonly name?: string;
   /** Logging mode. */
@@ -169,6 +176,8 @@ export interface WorktreeRunResult {
   readonly branch: string;
   /** Path to the log file, if logging was drained to a file. */
   readonly logFilePath?: string;
+  /** Compact provider timing summary for the run and each iteration. */
+  readonly timing?: RunTimingSummary;
 }
 
 export interface WorktreeCreateSandboxOptions {
@@ -681,6 +690,8 @@ export const createWorktree = async (
           completionSignal: opts.completionSignal,
           idleTimeoutSeconds: opts.idleTimeoutSeconds,
           completionTimeoutSeconds: opts.completionTimeoutSeconds,
+          heartbeatIntervalSeconds: opts.heartbeatIntervalSeconds,
+          visibleInactivityTimeoutSeconds: opts.visibleInactivityTimeoutSeconds,
           name: opts.name,
           resumeSession: opts.resumeSession,
           signal: opts.signal,
@@ -716,6 +727,7 @@ export const createWorktree = async (
         branch: result.branch,
         logFilePath:
           resolvedLogging.type === "file" ? resolvedLogging.path : undefined,
+        timing: result.timing,
       } satisfies WorktreeRunResult;
     });
 

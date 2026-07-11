@@ -2,7 +2,7 @@ import { NodeContext, NodeFileSystem } from "@effect/platform-node";
 import { appendFileSync, mkdirSync } from "node:fs";
 import path, { join } from "node:path";
 import { styleText } from "node:util";
-import { Effect, Layer } from "effect";
+import { Cause, Effect, Exit, Layer } from "effect";
 import { resolveCwd } from "./resolveCwd.js";
 import { assertResumeSessionExists } from "./resumePrecheck.js";
 import type { AgentProvider } from "./AgentProvider.js";
@@ -15,8 +15,10 @@ import {
 import {
   orchestrate,
   type IterationResult,
+  type IterationTimingSummary,
   type IterationUsage,
   type OrchestrateResult,
+  type RunTimingSummary,
 } from "./Orchestrator.js";
 import { resolvePrompt } from "./PromptResolver.js";
 import {
@@ -377,6 +379,13 @@ export interface RunOptions<A extends AgentProvider = AgentProvider> {
    * of `idleTimeoutSeconds`. Default: 60.
    */
   readonly completionTimeoutSeconds?: number;
+  /** Emit a visible heartbeat while the provider call is live. Default: 30 seconds. */
+  readonly heartbeatIntervalSeconds?: number;
+  /**
+   * Timeout in seconds for visible inactivity only (displayed text/tool progress).
+   * Raw/internal stream noise does not reset this timeout. Disabled by default.
+   */
+  readonly visibleInactivityTimeoutSeconds?: number;
   /** Optional name for the run, shown as a prefix in log output */
   readonly name?: string;
   /** Paths relative to the host repo root to copy into the worktree before sandbox start. */
@@ -427,6 +436,10 @@ export interface RunOptions<A extends AgentProvider = AgentProvider> {
 }
 
 export type { IterationResult, IterationUsage } from "./Orchestrator.js";
+export type {
+  IterationTimingSummary,
+  RunTimingSummary,
+} from "./Orchestrator.js";
 
 export type ResumeRunResultOptions = Omit<
   RunOptions,
@@ -454,6 +467,8 @@ export interface RunResult {
   readonly logFilePath?: string;
   /** Host path to the preserved worktree, set when the run succeeded but the worktree had uncommitted changes. */
   readonly preservedWorktreePath?: string;
+  /** Compact provider timing summary for the run and each iteration. */
+  readonly timing?: RunTimingSummary;
   /** Continue the last captured agent session for exactly one iteration.
    *  Present only when the provider supports resume (`sessionStorage` populated). */
   readonly resume?: (
@@ -748,6 +763,8 @@ export async function run(
       completionSignal: options.completionSignal,
       idleTimeoutSeconds: options.idleTimeoutSeconds,
       completionTimeoutSeconds: options.completionTimeoutSeconds,
+      heartbeatIntervalSeconds: options.heartbeatIntervalSeconds,
+      visibleInactivityTimeoutSeconds: options.visibleInactivityTimeoutSeconds,
       name: options.name,
       resumeSession: options.resumeSession,
       forkSession: options.forkSession,
@@ -788,15 +805,14 @@ export async function run(
       : baseEffect;
 
   let result: OrchestrateResult;
-  try {
-    result = await Effect.runPromise(
-      withErrorLog.pipe(Effect.provide(runLayer)),
-    );
-  } catch (error: unknown) {
-    // If the signal was aborted, surface its reason verbatim (no wrapping)
+  const exit = await Effect.runPromiseExit(
+    withErrorLog.pipe(Effect.provide(runLayer)),
+  );
+  if (Exit.isFailure(exit)) {
     options.signal?.throwIfAborted();
-    throw error;
+    throw Cause.squash(exit.cause);
   }
+  result = exit.value;
 
   const baseResult = {
     ...result,

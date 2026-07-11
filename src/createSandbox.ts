@@ -22,7 +22,7 @@ import {
 } from "./PromptArgumentSubstitution.js";
 import { resolvePrompt } from "./PromptResolver.js";
 import { preprocessPrompt } from "./PromptPreprocessor.js";
-import type { LoggingOption, Timeouts } from "./run.js";
+import type { LoggingOption, RunTimingSummary, Timeouts } from "./run.js";
 import {
   buildAgentStreamHandler,
   buildCompletionMessage,
@@ -116,6 +116,13 @@ export interface ResumeSandboxRunResultOptions {
   readonly idleTimeoutSeconds?: number;
   /** Grace window in seconds after a completion signal is observed but the agent process has not exited. See ADR 0019. Default: 60. */
   readonly completionTimeoutSeconds?: number;
+  /** Emit a visible heartbeat while the provider call is live. Default: 30 seconds. */
+  readonly heartbeatIntervalSeconds?: number;
+  /**
+   * Timeout in seconds for visible inactivity only (displayed text/tool progress).
+   * Raw/internal stream noise does not reset this timeout. Disabled by default.
+   */
+  readonly visibleInactivityTimeoutSeconds?: number;
   /** Display name for this run. */
   readonly name?: string;
   /** Logging mode. */
@@ -166,6 +173,8 @@ export interface SandboxRunResult {
   readonly commits: { sha: string }[];
   /** Path to the log file, if logging was drained to a file. */
   readonly logFilePath?: string;
+  /** Compact provider timing summary for the run and each iteration. */
+  readonly timing?: RunTimingSummary;
   /**
    * Continue the last captured agent session for exactly one iteration inside
    * the same long-lived sandbox. Present only when the provider supports
@@ -470,6 +479,9 @@ const buildSandboxHandle = (
               completionSignal: runOptions.completionSignal,
               idleTimeoutSeconds: runOptions.idleTimeoutSeconds,
               completionTimeoutSeconds: runOptions.completionTimeoutSeconds,
+              heartbeatIntervalSeconds: runOptions.heartbeatIntervalSeconds,
+              visibleInactivityTimeoutSeconds:
+                runOptions.visibleInactivityTimeoutSeconds,
               name: runOptions.name,
               resumeSession: runOptions.resumeSession,
               forkSession: runOptions.forkSession,
@@ -507,6 +519,7 @@ const buildSandboxHandle = (
         commits: result.commits,
         logFilePath:
           resolvedLogging.type === "file" ? resolvedLogging.path : undefined,
+        timing: result.timing,
       };
 
       // Expose .resume()/.fork() only when the provider supports session
