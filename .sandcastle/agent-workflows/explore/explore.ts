@@ -1,10 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   asRecord,
   asString,
+  factoryDocker,
   factoryRunOptions,
   fail,
   required,
@@ -36,7 +36,7 @@ try {
   const result = await runWithExtraction({
     name: `explore-#${ISSUE_NUMBER}`,
     ...factoryRunOptions(),
-    sandbox: noSandbox(),
+    sandbox: factoryDocker(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

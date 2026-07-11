@@ -1,6 +1,6 @@
 import * as path from "node:path";
-import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
+  factoryDocker,
   factoryRunOptions,
   fail,
   required,
@@ -21,7 +21,7 @@ try {
   const result = await runFactoryAgent({
     name: `implement-#${ISSUE_NUMBER}`,
     ...factoryRunOptions(),
-    sandbox: noSandbox(),
+    sandbox: factoryDocker(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

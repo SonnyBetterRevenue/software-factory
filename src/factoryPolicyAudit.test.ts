@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -42,6 +43,12 @@ vi.mock(
 const root = process.cwd();
 const read = (relativePath: string) =>
   readFileSync(join(root, relativePath), "utf8");
+const authResidue = (home: string) =>
+  existsSync(join(home, ".codex"))
+    ? readdirSync(join(home, ".codex")).filter(
+        (entry) => entry === "auth.json" || entry.startsWith("auth.json.tmp."),
+      )
+    : [];
 
 const importCommon = async () =>
   import(
@@ -105,11 +112,24 @@ describe("active Software Factory Codex policy", () => {
 
     for (const workflow of workflows) {
       const contents = read(workflow);
-      expect(contents, workflow).toContain("@openai/codex@0.143.0");
       expect(contents, workflow).toContain("CODEX_AUTH_JSON_B64");
+      expect(contents, workflow).toContain("npx sandcastle docker build-image");
+      expect(
+        contents.indexOf("npx sandcastle docker build-image"),
+      ).toBeLessThan(contents.indexOf("CODEX_AUTH_JSON_B64"));
       expect(contents, workflow).not.toMatch(/Claude|claude|ANTHROPIC/);
+      expect(contents, workflow).not.toContain("@openai/codex");
       expect(contents, workflow).not.toContain("OPENAI_API_KEY");
       expect(contents, workflow).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    }
+  });
+
+  it("routes every active GitHub Actions agent through Factory Docker, not no-sandbox", () => {
+    for (const route of activeRoutes) {
+      const contents = read(route);
+      expect(contents, route).not.toContain("noSandbox");
+      expect(contents, route).not.toContain("sandboxes/no-sandbox");
+      expect(contents, route).toMatch(/factoryDocker\(|runFactoryInSandbox\(/);
     }
   });
 
@@ -169,6 +189,7 @@ describe("active Software Factory Codex policy", () => {
     expect(success.output).not.toContain(secret);
     expect(success.output).not.toContain(encoded);
     expect(existsSync(join(success.home, ".codex/auth.json"))).toBe(false);
+    expect(authResidue(success.home)).toEqual([]);
 
     const failure = run(true);
     expect(failure.failed).toBe(true);
@@ -176,6 +197,7 @@ describe("active Software Factory Codex policy", () => {
     expect(failure.output).not.toContain(secret);
     expect(failure.output).not.toContain(encoded);
     expect(existsSync(join(failure.home, ".codex/auth.json"))).toBe(false);
+    expect(authResidue(failure.home)).toEqual([]);
   });
 
   it("refuses pre-existing Codex auth and does not print the secret", async () => {
@@ -194,6 +216,45 @@ describe("active Software Factory Codex policy", () => {
       }),
     ).toThrow();
     expect(readFileSync(authPath, "utf8")).toBe("keep-me");
+    expect(authResidue(home)).toEqual(["auth.json"]);
+  });
+
+  it("cleans malformed Codex auth temp fragments without creating final auth", async () => {
+    const { materializeCodexAuthCommand } = await importCommon();
+    const home = mkdtempSync(join(tmpdir(), "factory-codex-malformed-"));
+    const authPath = join(home, ".codex/auth.json");
+
+    expect(() =>
+      execFileSync("sh", ["-c", materializeCodexAuthCommand()], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: home,
+          CODEX_AUTH_JSON_B64: "eyJ0b2tlbnMi!!!!",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      }),
+    ).toThrow();
+
+    expect(existsSync(authPath)).toBe(false);
+    expect(authResidue(home)).toEqual([]);
+  });
+
+  it("fails closed without Codex auth secret and leaves no auth residue", async () => {
+    const { materializeCodexAuthCommand } = await importCommon();
+    const home = mkdtempSync(join(tmpdir(), "factory-codex-missing-"));
+    const authPath = join(home, ".codex/auth.json");
+
+    expect(() =>
+      execFileSync("sh", ["-c", materializeCodexAuthCommand()], {
+        encoding: "utf8",
+        env: { ...process.env, HOME: home, CODEX_AUTH_JSON_B64: "" },
+        stdio: ["ignore", "pipe", "pipe"],
+      }),
+    ).toThrow();
+
+    expect(existsSync(authPath)).toBe(false);
+    expect(authResidue(home)).toEqual([]);
   });
 
   it("uses collision-resistant recovery prompts and removes them after retry", async () => {
@@ -230,6 +291,48 @@ describe("active Software Factory Codex policy", () => {
     }
     expect(readFileSync(originalPrompt, "utf8")).toBe("do the work");
     rmSync(outputDir, { recursive: true, force: true });
+  });
+
+  it("retries inline-prompt runs once after visible inactivity without a third attempt", async () => {
+    const output = { tag: "output", schema: {} };
+    const attempts: unknown[] = [];
+    mockRun.mockImplementation(async (options: unknown) => {
+      attempts.push(options);
+      if (attempts.length <= 2) {
+        throw { _tag: "AgentVisibleInactivityTimeoutError" };
+      }
+      throw new Error("third attempt should not run");
+    });
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as never);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { runFactoryAgent } = await importCommon();
+    await expect(
+      runFactoryAgent({
+        sandbox: { tag: "none", name: "no-sandbox", env: {} },
+        prompt: "extract this original prompt",
+        output,
+      } as never),
+    ).rejects.toThrow("process.exit");
+
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toMatchObject({
+      prompt: "extract this original prompt",
+      output,
+    });
+    expect(attempts[1]).toMatchObject({
+      prompt: expect.stringContaining("extract this original prompt"),
+      output,
+    });
+    expect((attempts[1] as { prompt: string }).prompt).toContain(
+      "Retry exactly once",
+    );
+    expect((attempts[1] as { promptFile?: string }).promptFile).toBeUndefined();
+
+    exit.mockRestore();
+    error.mockRestore();
   });
 
   it("reports the sandbox worktree path after a reused sandbox times out twice without an error path", async () => {

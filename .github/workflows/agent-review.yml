@@ -54,8 +54,8 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Install Codex
-        run: npm install -g @openai/codex@0.143.0
+      - name: Build Sandcastle image
+        run: npx sandcastle docker build-image
 
       - name: Run review agent
         env:

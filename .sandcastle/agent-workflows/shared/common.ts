@@ -74,6 +74,17 @@ export const materializeCodexAuthCommand = (): string => `
 set -eu
 auth_dir="$HOME/.codex"
 auth_file="$auth_dir/auth.json"
+tmp_auth=""
+created_auth_file=0
+cleanup_factory_codex_auth() {
+  if [ -n "$tmp_auth" ]; then
+    rm -f "$tmp_auth"
+  fi
+  if [ "$created_auth_file" = "1" ]; then
+    rm -f "$auth_file"
+  fi
+}
+trap cleanup_factory_codex_auth EXIT
 if [ -z "\${${FACTORY_CODEX_AUTH_ENV}:-}" ]; then
   echo "Missing required env var: ${FACTORY_CODEX_AUTH_ENV}" >&2
   exit 1
@@ -85,21 +96,15 @@ fi
 mkdir -p "$auth_dir"
 chmod 700 "$auth_dir"
 tmp_auth="$auth_file.tmp.$$"
-cleanup_auth() {
-  rm -f "$tmp_auth"
-}
-trap cleanup_auth EXIT
 printf '%s' "\${${FACTORY_CODEX_AUTH_ENV}}" | base64 -d > "$tmp_auth"
 chmod 600 "$tmp_auth"
 mv "$tmp_auth" "$auth_file"
+tmp_auth=""
+created_auth_file=1
 `;
 
 const withCodexAuthCommand = (command: string): string => `
 ${materializeCodexAuthCommand()}
-cleanup_factory_codex_auth() {
-  rm -f "$HOME/.codex/auth.json"
-}
-trap cleanup_factory_codex_auth EXIT
 unset ${FACTORY_CODEX_AUTH_ENV}
 ${command}
 `;
@@ -140,15 +145,16 @@ const recoveryPromptPath = (): string =>
 const writeRecoveryPrompt = (originalPromptFile: string): string => {
   const promptPath = recoveryPromptPath();
   const original = fs.readFileSync(originalPromptFile, "utf8");
-  fs.writeFileSync(
-    promptPath,
-    `${original}
-
-The previous attempt timed out without visible progress. Retry exactly once in this preserved worktree. Use a smaller atom: inspect the current state, choose the smallest still-useful next change, make that change, verify it, and commit it. Do not switch models or start over elsewhere.
-`,
-  );
+  fs.writeFileSync(promptPath, `${original}${recoveryInstruction()}`);
   return promptPath;
 };
+
+const recoveryInstruction = (): string => `
+The previous attempt timed out without visible progress. Retry exactly once in this preserved worktree. Use a smaller atom: inspect the current state, choose the smallest still-useful next change, make that change, verify it, and commit it. Do not switch models or start over elsewhere.
+`;
+
+const appendRecoveryInstruction = (prompt: string): string =>
+  `${prompt}${recoveryInstruction()}`;
 
 const preservedWorktreePathFromError = (error: unknown): string | undefined =>
   typeof error === "object" &&
@@ -199,19 +205,29 @@ export async function runFactoryInSandbox<
 export async function runFactoryAgent(
   options: Parameters<typeof sandcastle.run>[0],
 ): Promise<Awaited<ReturnType<typeof sandcastle.run>>> {
+  const runOptions = { ...options, ...factoryRunOptions() };
   try {
-    return await sandcastle.run({ ...options, ...factoryRunOptions() });
+    return await sandcastle.run(runOptions);
   } catch (error) {
-    if (!isVisibleInactivityTimeout(error) || !options.promptFile) {
+    if (
+      !isVisibleInactivityTimeout(error) ||
+      (options.promptFile === undefined && options.prompt === undefined)
+    ) {
       throw error;
     }
 
-    const promptFile = writeRecoveryPrompt(options.promptFile);
+    const promptFile =
+      options.promptFile === undefined
+        ? undefined
+        : writeRecoveryPrompt(options.promptFile);
     try {
       return await sandcastle.run({
-        ...options,
-        ...factoryRunOptions(),
+        ...runOptions,
         promptFile,
+        prompt:
+          options.prompt === undefined
+            ? undefined
+            : appendRecoveryInstruction(options.prompt),
       });
     } catch (secondError) {
       if (isVisibleInactivityTimeout(secondError)) {
@@ -225,7 +241,9 @@ export async function runFactoryAgent(
       }
       throw secondError;
     } finally {
-      fs.rmSync(promptFile, { force: true });
+      if (promptFile !== undefined) {
+        fs.rmSync(promptFile, { force: true });
+      }
     }
   }
 }

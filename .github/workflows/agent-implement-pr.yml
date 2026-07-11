@@ -66,9 +66,9 @@ jobs:
         if: github.event.pull_request.state == 'open'
         run: npm run build
 
-      - name: Install Codex
+      - name: Build Sandcastle image
         if: github.event.pull_request.state == 'open'
-        run: npm install -g @openai/codex@0.143.0
+        run: npx sandcastle docker build-image
 
       - name: Run implement-PR agent
         if: github.event.pull_request.state == 'open'
