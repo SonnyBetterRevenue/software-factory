@@ -19,7 +19,10 @@
  * as a PR automatically.
  */
 import * as sandcastle from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import {
+  factoryDocker,
+  runFactoryInSandbox,
+} from "../.sandcastle/agent-workflows/shared/common";
 
 const branch = process.env["FACTORY_BRANCH"]!;
 const base = process.env["FACTORY_BASE"];
@@ -43,12 +46,11 @@ await using worktree = await sandcastle.createWorktree({
 });
 
 await using sandbox = await worktree.createSandbox({
-  sandbox: docker(),
+  sandbox: factoryDocker(),
 });
 
-const result = await sandbox.run({
+const result = await runFactoryInSandbox(sandbox, {
   name: "Implementer #" + issueNumber,
-  agent: sandcastle.claudeCode("claude-opus-4-8"),
   promptFile: "./.sandcastle/implement-prompt.md",
   promptArgs: {
     ISSUE_NUMBER: String(issueNumber),
@@ -58,9 +60,8 @@ const result = await sandbox.run({
 });
 
 if (result.commits.length > 0) {
-  await sandbox.run({
+  await runFactoryInSandbox(sandbox, {
     name: "Reviewer #" + issueNumber,
-    agent: sandcastle.claudeCode("claude-opus-4-8"),
     promptFile: "./.sandcastle/review-prompt.md",
     promptArgs: {
       ISSUE_NUMBER: String(issueNumber),

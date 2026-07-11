@@ -1,6 +1,6 @@
 import * as sandcastle from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import {
+  factoryDocker,
   runFactoryAgent,
   runFactoryInSandbox,
 } from "./agent-workflows/shared/common";
@@ -13,7 +13,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   // Phase 1: Plan — orchestrator agent analyzes issues and picks parallelizable work
   const plan = await runFactoryAgent({
-    sandbox: docker(),
+    sandbox: factoryDocker(),
     name: "Planner",
     promptFile: "./.sandcastle/plan-prompt.md",
   });
@@ -62,7 +62,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       await acquire();
       try {
         await using sandbox = await sandcastle.createSandbox({
-          sandbox: docker(),
+          sandbox: factoryDocker(),
           branch: issue.branch,
           copyToWorktree: ["node_modules"],
           hooks: {
@@ -141,7 +141,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   // Phase 3: Merge — one agent merges all branches together
   await runFactoryAgent({
-    sandbox: docker(),
+    sandbox: factoryDocker(),
     name: "Merger",
     maxIterations: 10,
     promptFile: "./.sandcastle/merge-prompt.md",

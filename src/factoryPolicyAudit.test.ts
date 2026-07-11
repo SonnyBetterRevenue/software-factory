@@ -12,14 +12,28 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-let mockCodex = () => ({});
+let mockCodex = (..._args: unknown[]) => ({});
 const mockRun = vi.fn();
+const mockDocker = vi.fn((options?: unknown) => ({
+  tag: "bind-mount",
+  name: "docker",
+  env: (options as { env?: Record<string, string> } | undefined)?.env ?? {},
+}));
 
 vi.mock(
   "@ai-hero/sandcastle",
   () => ({
-    codex: mockCodex,
+    codex: (...args: unknown[]) => mockCodex(...args),
     run: mockRun,
+  }),
+  // @ts-expect-error Vitest supports virtual module mocks at runtime.
+  { virtual: true },
+);
+
+vi.mock(
+  "@ai-hero/sandcastle/sandboxes/docker",
+  () => ({
+    docker: mockDocker,
   }),
   // @ts-expect-error Vitest supports virtual module mocks at runtime.
   { virtual: true },
@@ -36,13 +50,16 @@ const importCommon = async () =>
 
 afterEach(() => {
   vi.resetModules();
-  mockCodex = () => ({});
+  mockCodex = (..._args: unknown[]) => ({});
   mockRun.mockReset();
+  mockDocker.mockClear();
   delete process.env.OUTPUT_DIR;
   delete process.env.CODEX_AUTH_JSON_B64;
+  delete process.env.OPENAI_API_KEY;
 });
 
 const activeRoutes = [
+  ".factory/implement-task.ts",
   ".sandcastle/run.ts",
   ".sandcastle/agent-workflows/explore/explore.ts",
   ".sandcastle/agent-workflows/implement/implement.ts",
@@ -94,6 +111,19 @@ describe("active Software Factory Codex policy", () => {
       expect(contents, workflow).not.toContain("OPENAI_API_KEY");
       expect(contents, workflow).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
     }
+  });
+
+  it("passes only Codex auth through the shared Factory Docker provider seam", async () => {
+    process.env.CODEX_AUTH_JSON_B64 = "trusted-host-auth";
+    process.env.OPENAI_API_KEY = "must-not-propagate";
+
+    const { factoryDocker } = await importCommon();
+    const provider = factoryDocker();
+
+    expect(mockDocker).toHaveBeenCalledOnce();
+    expect(provider.env).toEqual({
+      CODEX_AUTH_JSON_B64: "trusted-host-auth",
+    });
   });
 
   it("materializes Codex auth with private modes, unsets env, and cleans up on success and failure", async () => {
@@ -199,6 +229,100 @@ describe("active Software Factory Codex policy", () => {
       expect(existsSync(promptPath)).toBe(false);
     }
     expect(readFileSync(originalPrompt, "utf8")).toBe("do the work");
+    rmSync(outputDir, { recursive: true, force: true });
+  });
+
+  it("reports the sandbox worktree path after a reused sandbox times out twice without an error path", async () => {
+    const outputDir = mkdtempSync(join(tmpdir(), "factory-timeout-"));
+    process.env.OUTPUT_DIR = outputDir;
+    const originalPrompt = join(outputDir, "prompt.md");
+    writeFileSync(originalPrompt, "do the work");
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as never);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { runFactoryInSandbox } = await importCommon();
+    await expect(
+      runFactoryInSandbox(
+        {
+          worktreePath: "/tmp/reused-sandbox-worktree",
+          run: async () => {
+            throw { _tag: "AgentVisibleInactivityTimeoutError" };
+          },
+        },
+        { promptFile: originalPrompt },
+      ),
+    ).rejects.toThrow("process.exit");
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Preserved worktree: /tmp/reused-sandbox-worktree",
+      ),
+    );
+
+    exit.mockRestore();
+    error.mockRestore();
+    rmSync(outputDir, { recursive: true, force: true });
+  });
+
+  it("reports cwd after a no-sandbox top-level run times out twice without an error path", async () => {
+    const outputDir = mkdtempSync(join(tmpdir(), "factory-nosandbox-timeout-"));
+    process.env.OUTPUT_DIR = outputDir;
+    const originalPrompt = join(outputDir, "prompt.md");
+    writeFileSync(originalPrompt, "do the work");
+    mockRun.mockRejectedValue({ _tag: "AgentVisibleInactivityTimeoutError" });
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as never);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { runFactoryAgent } = await importCommon();
+    await expect(
+      runFactoryAgent({
+        sandbox: { tag: "none", name: "no-sandbox", env: {} },
+        cwd: "/tmp/no-sandbox-worktree",
+        promptFile: originalPrompt,
+      } as never),
+    ).rejects.toThrow("process.exit");
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining("Preserved worktree: /tmp/no-sandbox-worktree"),
+    );
+
+    exit.mockRestore();
+    error.mockRestore();
+    rmSync(outputDir, { recursive: true, force: true });
+  });
+
+  it("reports process cwd after a head run times out twice without cwd or an error path", async () => {
+    const outputDir = mkdtempSync(join(tmpdir(), "factory-head-timeout-"));
+    process.env.OUTPUT_DIR = outputDir;
+    const originalPrompt = join(outputDir, "prompt.md");
+    writeFileSync(originalPrompt, "do the work");
+    mockRun.mockRejectedValue({ _tag: "AgentVisibleInactivityTimeoutError" });
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as never);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { runFactoryAgent } = await importCommon();
+    await expect(
+      runFactoryAgent({
+        sandbox: { tag: "none", name: "no-sandbox", env: {} },
+        promptFile: originalPrompt,
+      } as never),
+    ).rejects.toThrow("process.exit");
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining(`Preserved worktree: ${process.cwd()}`),
+    );
+
+    exit.mockRestore();
+    error.mockRestore();
     rmSync(outputDir, { recursive: true, force: true });
   });
 });

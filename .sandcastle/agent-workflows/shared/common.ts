@@ -4,6 +4,7 @@ import { execFileSync, execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import * as sandcastle from "@ai-hero/sandcastle";
+import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 
 export const outputDir = (): string => process.env.OUTPUT_DIR ?? "/tmp";
 
@@ -58,6 +59,16 @@ export const FACTORY_EFFORT = "low";
 export const FACTORY_CODEX_AUTH_ENV = "CODEX_AUTH_JSON_B64";
 export const FACTORY_HEARTBEAT_SECONDS = 30;
 export const FACTORY_VISIBLE_INACTIVITY_SECONDS = 60;
+
+export const factoryDocker = () =>
+  docker({
+    env:
+      process.env[FACTORY_CODEX_AUTH_ENV] === undefined
+        ? {}
+        : {
+            [FACTORY_CODEX_AUTH_ENV]: process.env[FACTORY_CODEX_AUTH_ENV],
+          },
+  });
 
 export const materializeCodexAuthCommand = (): string => `
 set -eu
@@ -139,6 +150,18 @@ The previous attempt timed out without visible progress. Retry exactly once in t
   return promptPath;
 };
 
+const preservedWorktreePathFromError = (error: unknown): string | undefined =>
+  typeof error === "object" &&
+  error !== null &&
+  typeof (error as { preservedWorktreePath?: unknown })
+    .preservedWorktreePath === "string" &&
+  (error as { preservedWorktreePath: string }).preservedWorktreePath.length > 0
+    ? (error as { preservedWorktreePath: string }).preservedWorktreePath
+    : undefined;
+
+const concretePath = (value: unknown): string | undefined =>
+  typeof value === "string" && value.length > 0 ? value : undefined;
+
 export async function runFactoryInSandbox<
   T extends { run(options: Record<string, unknown>): Promise<any> },
 >(
@@ -157,9 +180,11 @@ export async function runFactoryInSandbox<
     try {
       return await sandbox.run({ ...runOptions, promptFile });
     } catch (secondError) {
-      const preserved = (secondError as { preservedWorktreePath?: string })
-        ?.preservedWorktreePath;
-      if (isVisibleInactivityTimeout(secondError) && preserved) {
+      if (isVisibleInactivityTimeout(secondError)) {
+        const preserved =
+          preservedWorktreePathFromError(secondError) ??
+          concretePath((sandbox as { worktreePath?: unknown }).worktreePath) ??
+          process.cwd();
         fail(
           `Agent hit visible inactivity timeout twice. Preserved worktree: ${preserved}`,
         );
@@ -189,9 +214,11 @@ export async function runFactoryAgent(
         promptFile,
       });
     } catch (secondError) {
-      const preserved = (secondError as { preservedWorktreePath?: string })
-        ?.preservedWorktreePath;
-      if (isVisibleInactivityTimeout(secondError) && preserved) {
+      if (isVisibleInactivityTimeout(secondError)) {
+        const preserved =
+          preservedWorktreePathFromError(secondError) ??
+          concretePath((options as { cwd?: unknown }).cwd) ??
+          process.cwd();
         fail(
           `Agent hit visible inactivity timeout twice. Preserved worktree: ${preserved}`,
         );
