@@ -5,6 +5,7 @@ import { preprocessPrompt } from "./PromptPreprocessor.js";
 import {
   AgentError,
   AgentIdleTimeoutError,
+  AgentVisibleInactivityTimeoutError,
   SessionCaptureError,
 } from "./errors.js";
 import type { SandboxError } from "./errors.js";
@@ -26,10 +27,18 @@ const invokeAgent = (
   provider: AgentProvider,
   idleTimeoutMs: number,
   completionTimeoutMs: number,
+  heartbeatIntervalMs: number,
+  visibleInactivityTimeoutMs: number | undefined,
   completionSignals: readonly string[],
   onText: (text: string) => void,
   onToolCall: (name: string, formattedArgs: string) => void,
   onRawLine: (line: string) => void,
+  onHeartbeat: (
+    state: ActivityState,
+    elapsedMs: number,
+    lastVisibleEventAt: Date | undefined,
+    visibleSilenceMs: number,
+  ) => void,
   onIdleWarning: (minutes: number) => void,
   onCompletionTimeout: (timeoutMs: number) => void,
   idleWarningIntervalMs: number = IDLE_WARNING_INTERVAL_MS,
@@ -37,7 +46,12 @@ const invokeAgent = (
   forkSession?: boolean,
   signal?: AbortSignal,
 ): Effect.Effect<
-  { result: string; sessionId?: string; usage?: IterationUsage },
+  {
+    result: string;
+    sessionId?: string;
+    usage?: IterationUsage;
+    timing: IterationTimingSummary;
+  },
   SandboxError
 > =>
   Effect.gen(function* () {
@@ -50,26 +64,87 @@ const invokeAgent = (
     let accumulatedOutput = "";
 
     // Deferred that fails when the idle timer fires (no signal seen).
-    const timeoutSignal = yield* Deferred.make<never, AgentIdleTimeoutError>();
+    const timeoutSignal = yield* Deferred.make<
+      never,
+      AgentIdleTimeoutError | AgentVisibleInactivityTimeoutError
+    >();
     // Deferred that resolves successfully when the completion-grace timer
     // fires (signal seen but process hasn't exited). Resolving lets the race
     // hand control back to the orchestrator with the buffered output, which
     // still contains the signal so the existing completionSignal check works.
     const completionTimeoutDeferred = yield* Deferred.make<
-      { result: string; sessionId?: string; usage?: IterationUsage },
+      {
+        result: string;
+        sessionId?: string;
+        usage?: IterationUsage;
+        timing: IterationTimingSummary;
+      },
       never
     >();
     let timeoutFiber: Fiber.RuntimeFiber<unknown, unknown> | null = null;
     let completionDetected = false;
+    let completionTimeoutTriggered = false;
 
     // Periodic idle warning state
     let warningFiber: Fiber.RuntimeFiber<unknown, unknown> | null = null;
     let idleMinuteCounter = 0;
+    let heartbeatFiber: Fiber.RuntimeFiber<unknown, unknown> | null = null;
+    let visibleTimeoutFiber: Fiber.RuntimeFiber<unknown, unknown> | null = null;
+    const startedAtMs = Date.now();
+    let state: ActivityState = "provider_wait";
+    let lastStateChangeAtMs = startedAtMs;
+    let lastVisibleEventAtMs: number | undefined;
+    let heartbeatCount = 0;
+    let longestVisibleSilenceMs = 0;
+    let outcome: IterationTimingSummary["outcome"] = "success";
+    let providerWaitMs = 0;
+    let toolRunningMs = 0;
 
     const interruptFiber = (
       fiber: Fiber.RuntimeFiber<unknown, unknown> | null,
     ) => {
       if (fiber !== null) Effect.runFork(Fiber.interrupt(fiber));
+    };
+
+    const updateLongestVisibleSilence = (nowMs: number) => {
+      const visibleSilenceMs =
+        lastVisibleEventAtMs === undefined
+          ? nowMs - startedAtMs
+          : nowMs - lastVisibleEventAtMs;
+      if (visibleSilenceMs > longestVisibleSilenceMs) {
+        longestVisibleSilenceMs = visibleSilenceMs;
+      }
+      return visibleSilenceMs;
+    };
+
+    const addStateDuration = (nowMs: number) => {
+      const delta = nowMs - lastStateChangeAtMs;
+      if (state === "tool_running") {
+        toolRunningMs += delta;
+      } else {
+        providerWaitMs += delta;
+      }
+      lastStateChangeAtMs = nowMs;
+    };
+
+    const setState = (next: ActivityState, nowMs: number) => {
+      if (state === next) return;
+      addStateDuration(nowMs);
+      state = next;
+    };
+
+    const buildTimingSummary = (): IterationTimingSummary => {
+      const nowMs = Date.now();
+      addStateDuration(nowMs);
+      updateLongestVisibleSilence(nowMs);
+      return {
+        providerWaitMs,
+        toolRunningMs,
+        longestVisibleSilenceMs,
+        heartbeatCount,
+        totalProviderMs: nowMs - startedAtMs,
+        outcome,
+      };
     };
 
     const startWarningInterval = () => {
@@ -86,6 +161,48 @@ const invokeAgent = (
       );
     };
 
+    const startHeartbeatInterval = () => {
+      interruptFiber(heartbeatFiber);
+      heartbeatFiber = Effect.runFork(
+        Effect.gen(function* () {
+          while (true) {
+            yield* Effect.sleep(Duration.millis(heartbeatIntervalMs));
+            const nowMs = Date.now();
+            const visibleSilenceMs = updateLongestVisibleSilence(nowMs);
+            heartbeatCount++;
+            onHeartbeat(
+              state,
+              nowMs - startedAtMs,
+              lastVisibleEventAtMs === undefined
+                ? undefined
+                : new Date(lastVisibleEventAtMs),
+              visibleSilenceMs,
+            );
+          }
+        }),
+      );
+    };
+
+    const resetVisibleTimeout = () => {
+      interruptFiber(visibleTimeoutFiber);
+      if (visibleInactivityTimeoutMs === undefined) return;
+      visibleTimeoutFiber = Effect.runFork(
+        Effect.gen(function* () {
+          yield* Effect.sleep(Duration.millis(visibleInactivityTimeoutMs));
+          outcome = "visible_inactivity_timeout";
+          yield* Deferred.fail(
+            timeoutSignal,
+            new AgentVisibleInactivityTimeoutError({
+              message:
+                `Agent produced no visible progress for ${visibleInactivityTimeoutMs / 1000} seconds. ` +
+                `Only text/tool events reset this timeout; raw provider noise does not.`,
+              timeoutMs: visibleInactivityTimeoutMs,
+            }),
+          );
+        }),
+      );
+    };
+
     const resetTimer = () => {
       interruptFiber(timeoutFiber);
       if (completionDetected) {
@@ -93,11 +210,14 @@ const invokeAgent = (
         timeoutFiber = Effect.runFork(
           Effect.gen(function* () {
             yield* Effect.sleep(Duration.millis(completionTimeoutMs));
+            outcome = "completion_timeout";
+            completionTimeoutTriggered = true;
             onCompletionTimeout(completionTimeoutMs);
             yield* Deferred.succeed(completionTimeoutDeferred, {
               result: resultText || accumulatedOutput,
               sessionId,
               usage,
+              timing: buildTimingSummary(),
             });
           }),
         );
@@ -106,6 +226,7 @@ const invokeAgent = (
         timeoutFiber = Effect.runFork(
           Effect.gen(function* () {
             yield* Effect.sleep(Duration.millis(idleTimeoutMs));
+            outcome = "idle_timeout";
             yield* Deferred.fail(
               timeoutSignal,
               new AgentIdleTimeoutError({
@@ -136,6 +257,8 @@ const invokeAgent = (
     }
 
     resetTimer();
+    startHeartbeatInterval();
+    resetVisibleTimeout();
 
     const execEffect = Effect.gen(function* () {
       const printCmd = provider.buildPrintCommand({
@@ -158,12 +281,22 @@ const invokeAgent = (
           }
           for (const parsed of provider.parseStreamLine(line)) {
             if (parsed.type === "text") {
+              const nowMs = Date.now();
+              setState("provider_wait", nowMs);
+              lastVisibleEventAtMs = nowMs;
+              updateLongestVisibleSilence(nowMs);
+              resetVisibleTimeout();
               onText(parsed.text);
               accumulatedOutput += parsed.text;
             } else if (parsed.type === "result") {
               resultText = parsed.result;
               accumulatedOutput += parsed.result;
             } else if (parsed.type === "tool_call") {
+              const nowMs = Date.now();
+              setState("tool_running", nowMs);
+              lastVisibleEventAtMs = nowMs;
+              updateLongestVisibleSilence(nowMs);
+              resetVisibleTimeout();
               onToolCall(parsed.name, parsed.args);
             } else if (parsed.type === "session_id") {
               sessionId = parsed.sessionId;
@@ -189,6 +322,7 @@ const invokeAgent = (
       });
 
       if (execResult.exitCode !== 0) {
+        outcome = "dead_provider";
         // Prefer stderr; fall back to resultText (from parsed stream events),
         // then to the tail of raw stdout (last 20 non-empty lines).
         let errorDetail = execResult.stderr;
@@ -201,12 +335,17 @@ const invokeAgent = (
         }
         return yield* Effect.fail(
           new AgentError({
-            message: `${provider.name} exited with code ${execResult.exitCode}:\n${errorDetail}`,
+            message: `[dead_provider] ${provider.name} exited with code ${execResult.exitCode}:\n${errorDetail}`,
           }),
         );
       }
 
-      return { result: resultText || execResult.stdout, sessionId, usage };
+      return {
+        result: resultText || execResult.stdout,
+        sessionId,
+        usage,
+        timing: buildTimingSummary(),
+      };
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {
@@ -214,13 +353,22 @@ const invokeAgent = (
           timeoutFiber = null;
           interruptFiber(warningFiber);
           warningFiber = null;
+          interruptFiber(heartbeatFiber);
+          heartbeatFiber = null;
+          interruptFiber(visibleTimeoutFiber);
+          visibleTimeoutFiber = null;
         }),
       ),
     );
 
     let raced: Effect.Effect<
-      { result: string; sessionId?: string; usage?: IterationUsage },
-      AgentIdleTimeoutError | SandboxError
+      {
+        result: string;
+        sessionId?: string;
+        usage?: IterationUsage;
+        timing: IterationTimingSummary;
+      },
+      AgentIdleTimeoutError | AgentVisibleInactivityTimeoutError | SandboxError
     > = Effect.raceFirst(execEffect, Deferred.await(timeoutSignal));
     raced = Effect.raceFirst(raced, Deferred.await(completionTimeoutDeferred));
     if (signal) {
@@ -231,6 +379,16 @@ const invokeAgent = (
     }
 
     return yield* raced.pipe(
+      Effect.catchTag("AgentError", (error) =>
+        completionTimeoutTriggered
+          ? Effect.succeed({
+              result: resultText || accumulatedOutput,
+              sessionId,
+              usage,
+              timing: buildTimingSummary(),
+            })
+          : Effect.fail(error),
+      ),
       Effect.ensuring(
         Effect.sync(() => {
           abortCleanup?.();
@@ -238,6 +396,10 @@ const invokeAgent = (
           timeoutFiber = null;
           interruptFiber(warningFiber);
           warningFiber = null;
+          interruptFiber(heartbeatFiber);
+          heartbeatFiber = null;
+          interruptFiber(visibleTimeoutFiber);
+          visibleTimeoutFiber = null;
         }),
       ),
     );
@@ -246,6 +408,27 @@ const invokeAgent = (
 const DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
 const DEFAULT_IDLE_TIMEOUT_SECONDS = 10 * 60; // 600 seconds
 const DEFAULT_COMPLETION_TIMEOUT_SECONDS = 60;
+const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
+
+export type ActivityState = "provider_wait" | "tool_running";
+
+export interface IterationTimingSummary {
+  readonly providerWaitMs: number;
+  readonly toolRunningMs: number;
+  readonly longestVisibleSilenceMs: number;
+  readonly heartbeatCount: number;
+  readonly totalProviderMs: number;
+  readonly outcome:
+    | "success"
+    | "completion_timeout"
+    | "idle_timeout"
+    | "visible_inactivity_timeout"
+    | "dead_provider";
+}
+
+export interface RunTimingSummary extends IterationTimingSummary {
+  readonly iterations: readonly IterationTimingSummary[];
+}
 
 export interface OrchestrateOptions {
   readonly hostRepoDir: string;
@@ -267,6 +450,13 @@ export interface OrchestrateOptions {
    * structured-output tags) is still captured. Default: 60 seconds.
    */
   readonly completionTimeoutSeconds?: number;
+  /** Emit a visible heartbeat while the provider call is live. Default: 30 seconds. */
+  readonly heartbeatIntervalSeconds?: number;
+  /**
+   * Timeout in seconds for visible inactivity only (displayed text/tool progress).
+   * Raw/internal stream noise does not reset this timer. Disabled by default.
+   */
+  readonly visibleInactivityTimeoutSeconds?: number;
   /** Optional name for the run, prepended to status messages as [name] */
   readonly name?: string;
   /** @internal Test-only override for the idle warning interval in milliseconds. Default: 60000 (1 minute). */
@@ -297,6 +487,7 @@ export interface IterationResult {
   readonly sessionFilePath?: string;
   /** Token usage snapshot from the last assistant message in the session, or undefined when capture is disabled or provider does not support usage parsing. */
   readonly usage?: IterationUsage;
+  readonly timing?: IterationTimingSummary;
 }
 
 export interface OrchestrateResult {
@@ -309,6 +500,7 @@ export interface OrchestrateResult {
   readonly branch: string;
   /** Host path to the preserved worktree from the last iteration, set when the worktree was left behind due to uncommitted changes on a successful run. */
   readonly preservedWorktreePath?: string;
+  readonly timing: RunTimingSummary;
 }
 
 export const orchestrate = (
@@ -323,6 +515,13 @@ export const orchestrate = (
   const completionTimeoutMs =
     (options.completionTimeoutSeconds ?? DEFAULT_COMPLETION_TIMEOUT_SECONDS) *
     1000;
+  const heartbeatIntervalMs =
+    (options.heartbeatIntervalSeconds ?? DEFAULT_HEARTBEAT_INTERVAL_SECONDS) *
+    1000;
+  const visibleInactivityTimeoutMs =
+    options.visibleInactivityTimeoutSeconds === undefined
+      ? undefined
+      : options.visibleInactivityTimeoutSeconds * 1000;
   return Effect.gen(function* () {
     const factory = yield* SandboxFactory;
     const display = yield* Display;
@@ -343,6 +542,7 @@ export const orchestrate = (
 
     const allCommits: { sha: string }[] = [];
     const allIterations: IterationResult[] = [];
+    const allTiming: IterationTimingSummary[] = [];
     let allStdout = "";
     let resolvedBranch = "";
     let iterationPreservedPath: string | undefined;
@@ -454,6 +654,38 @@ export const orchestrate = (
                     }),
                   );
                 };
+                const onHeartbeat = (
+                  state: ActivityState,
+                  elapsedMs: number,
+                  lastVisibleEventAt: Date | undefined,
+                  visibleSilenceMs: number,
+                ) => {
+                  const elapsedSeconds = (elapsedMs / 1000).toFixed(1);
+                  const silentSeconds = (visibleSilenceMs / 1000).toFixed(1);
+                  const lastVisiblePart =
+                    lastVisibleEventAt === undefined
+                      ? "last visible event: none yet"
+                      : `last visible event: ${lastVisibleEventAt.toISOString()}`;
+                  Effect.runPromise(
+                    display.status(
+                      label(
+                        `Heartbeat: state=${state}, elapsed=${elapsedSeconds}s, visible silence=${silentSeconds}s, ${lastVisiblePart}`,
+                      ),
+                      "info",
+                    ),
+                  );
+                  Effect.runPromise(
+                    streamEmitter.emit({
+                      type: "heartbeat",
+                      state,
+                      elapsedMs,
+                      lastVisibleEventAt,
+                      visibleSilenceMs,
+                      iteration: i,
+                      timestamp: new Date(),
+                    }),
+                  );
+                };
                 const onIdleWarning = (minutes: number) => {
                   const msg =
                     minutes === 1
@@ -475,6 +707,7 @@ export const orchestrate = (
                   result: agentOutput,
                   sessionId,
                   usage: streamUsage,
+                  timing,
                 } = yield* invokeAgent(
                   ctx.sandbox,
                   ctx.sandboxRepoDir,
@@ -482,10 +715,13 @@ export const orchestrate = (
                   provider,
                   idleTimeoutMs,
                   completionTimeoutMs,
+                  heartbeatIntervalMs,
+                  visibleInactivityTimeoutMs,
                   completionSignals,
                   onText,
                   onToolCall,
                   onRawLine,
+                  onHeartbeat,
                   onIdleWarning,
                   onCompletionTimeout,
                   options._idleWarningIntervalMs,
@@ -554,6 +790,7 @@ export const orchestrate = (
                   sessionId,
                   sessionFilePath,
                   usage,
+                  timing,
                 } as const;
               }),
           ),
@@ -570,9 +807,40 @@ export const orchestrate = (
         sessionId: lifecycleResult.result.sessionId,
         sessionFilePath: lifecycleResult.result.sessionFilePath,
         usage: lifecycleResult.result.usage,
+        timing: lifecycleResult.result.timing,
       });
+      allTiming.push(lifecycleResult.result.timing);
 
       if (lifecycleResult.result.completionSignal !== undefined) {
+        const timing: RunTimingSummary = {
+          iterations: allTiming,
+          providerWaitMs: allTiming.reduce(
+            (sum, item) => sum + item.providerWaitMs,
+            0,
+          ),
+          toolRunningMs: allTiming.reduce(
+            (sum, item) => sum + item.toolRunningMs,
+            0,
+          ),
+          longestVisibleSilenceMs: allTiming.reduce(
+            (max, item) => Math.max(max, item.longestVisibleSilenceMs),
+            0,
+          ),
+          heartbeatCount: allTiming.reduce(
+            (sum, item) => sum + item.heartbeatCount,
+            0,
+          ),
+          totalProviderMs: allTiming.reduce(
+            (sum, item) => sum + item.totalProviderMs,
+            0,
+          ),
+          outcome: allTiming.at(-1)?.outcome ?? "success",
+        };
+        yield* display.text(
+          label(
+            `Timing: provider=${(timing.totalProviderMs / 1000).toFixed(1)}s, wait=${(timing.providerWaitMs / 1000).toFixed(1)}s, tool=${(timing.toolRunningMs / 1000).toFixed(1)}s, longest visible silence=${(timing.longestVisibleSilenceMs / 1000).toFixed(1)}s, heartbeats=${timing.heartbeatCount}, outcome=${timing.outcome}`,
+          ),
+        );
         yield* display.status(
           label(`Agent signaled completion after ${i} iteration(s).`),
           "success",
@@ -584,6 +852,7 @@ export const orchestrate = (
           commits: allCommits,
           branch: resolvedBranch,
           preservedWorktreePath: iterationPreservedPath,
+          timing,
         };
       }
     }
@@ -592,6 +861,35 @@ export const orchestrate = (
       label(`Reached max iterations (${iterations}).`),
       "info",
     );
+    const timing: RunTimingSummary = {
+      iterations: allTiming,
+      providerWaitMs: allTiming.reduce(
+        (sum, item) => sum + item.providerWaitMs,
+        0,
+      ),
+      toolRunningMs: allTiming.reduce(
+        (sum, item) => sum + item.toolRunningMs,
+        0,
+      ),
+      longestVisibleSilenceMs: allTiming.reduce(
+        (max, item) => Math.max(max, item.longestVisibleSilenceMs),
+        0,
+      ),
+      heartbeatCount: allTiming.reduce(
+        (sum, item) => sum + item.heartbeatCount,
+        0,
+      ),
+      totalProviderMs: allTiming.reduce(
+        (sum, item) => sum + item.totalProviderMs,
+        0,
+      ),
+      outcome: allTiming.at(-1)?.outcome ?? "success",
+    };
+    yield* display.text(
+      label(
+        `Timing: provider=${(timing.totalProviderMs / 1000).toFixed(1)}s, wait=${(timing.providerWaitMs / 1000).toFixed(1)}s, tool=${(timing.toolRunningMs / 1000).toFixed(1)}s, longest visible silence=${(timing.longestVisibleSilenceMs / 1000).toFixed(1)}s, heartbeats=${timing.heartbeatCount}, outcome=${timing.outcome}`,
+      ),
+    );
     return {
       iterations: allIterations,
       completionSignal: undefined,
@@ -599,6 +897,7 @@ export const orchestrate = (
       commits: allCommits,
       branch: resolvedBranch,
       preservedWorktreePath: iterationPreservedPath,
+      timing,
     };
   });
 };

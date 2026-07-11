@@ -5,8 +5,10 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { exec } from "node:child_process";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   buildCompletionMessage,
@@ -25,14 +27,73 @@ import {
 import { claudeCode, cursor, opencode } from "./AgentProvider.js";
 import { Output, StructuredOutputError } from "./Output.js";
 import { claudeHostSessionPath } from "./SessionStore.js";
+import { AgentVisibleInactivityTimeoutError } from "./errors.js";
 import type { InteractiveOptions } from "./interactive.js";
 import type { WorktreeInteractiveOptions } from "./createWorktree.js";
 import { defaultImageName } from "./sandboxes/docker.js";
+import type { AgentStreamEvent } from "./AgentStreamEmitter.js";
 import * as sandcastle from "./SandboxProvider.js";
 import { createBindMountSandboxProvider } from "./SandboxProvider.js";
 import { testStubProvider } from "./sandboxes/test-shared.js";
 
 const testSandbox = testStubProvider({ name: "test" }).provider;
+const execAsync = promisify(exec);
+
+const initTestRepo = async (dir: string) => {
+  await execAsync("git init -b main", { cwd: dir });
+  await execAsync('git config user.email "test@test.com"', { cwd: dir });
+  await execAsync('git config user.name "Test"', { cwd: dir });
+  writeFileSync(join(dir, "tracked.txt"), "base");
+  await execAsync("git add tracked.txt", { cwd: dir });
+  await execAsync('git commit -m "base"', { cwd: dir });
+};
+
+const makeStreamingRunSandbox = (
+  behavior: (args: {
+    readonly worktreePath: string;
+    readonly command: string;
+    readonly onLine?: (line: string) => void;
+  }) => Promise<{ stdout: string; stderr: string; exitCode: number }>,
+) =>
+  createBindMountSandboxProvider({
+    name: "streaming-run-test",
+    create: async ({ worktreePath }) => ({
+      worktreePath,
+      exec: async (command, options) => {
+        if (command.startsWith("claude ")) {
+          return behavior({
+            worktreePath,
+            command,
+            onLine: options?.onLine,
+          });
+        }
+        try {
+          const result = await execAsync(command, {
+            cwd: options?.cwd ?? worktreePath,
+          });
+          return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
+        } catch (error) {
+          return {
+            stdout:
+              error instanceof Error && "stdout" in error
+                ? String(error.stdout ?? "")
+                : "",
+            stderr:
+              error instanceof Error && "stderr" in error
+                ? String(error.stderr ?? "")
+                : "",
+            exitCode:
+              typeof (error as { code?: unknown }).code === "number"
+                ? ((error as { code: number }).code ?? 1)
+                : 1,
+          };
+        }
+      },
+      copyFileIn: async () => {},
+      copyFileOut: async () => {},
+      close: async () => {},
+    }),
+  });
 
 describe("printFileDisplayStartup", () => {
   let consoleSpy: ReturnType<typeof vi.spyOn>;
@@ -251,6 +312,257 @@ describe("RunResult", () => {
     };
     expect(typeof result.fork).toBe("function");
   });
+});
+
+describe("visible progress heartbeats and timing", () => {
+  it("emits periodic provider_wait heartbeats during a live silent call", async () => {
+    const hostDir = mkdtempSync(join(tmpdir(), "sandcastle-heartbeat-"));
+    const logPath = join(hostDir, "heartbeat.log");
+    const streamEvents: AgentStreamEvent[] = [];
+    await initTestRepo(hostDir);
+
+    const sandbox = makeStreamingRunSandbox(async ({ onLine }) => {
+      await new Promise((resolve) => setTimeout(resolve, 220));
+      onLine?.(JSON.stringify({ type: "result", result: "done" }));
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+
+    const result = await run({
+      agent: claudeCode("claude-opus-4-8"),
+      sandbox,
+      cwd: hostDir,
+      prompt: "test",
+      branchStrategy: { type: "head" },
+      heartbeatIntervalSeconds: 0.05,
+      logging: {
+        type: "file",
+        path: logPath,
+        onAgentStreamEvent: (event) => streamEvents.push(event),
+      },
+    });
+
+    const heartbeats = streamEvents.filter(
+      (event) => event.type === "heartbeat",
+    );
+    expect(heartbeats.length).toBeGreaterThanOrEqual(3);
+    expect(heartbeats[0]).toMatchObject({
+      type: "heartbeat",
+      state: "provider_wait",
+    });
+    expect(result.timing?.heartbeatCount).toBe(heartbeats.length);
+    expect(result.timing?.iterations[0]?.outcome).toBe("success");
+
+    const logOutput = readFileSync(logPath, "utf8");
+    expect(logOutput).toContain("Heartbeat: state=provider_wait");
+    expect(logOutput).toContain("last visible event: none yet");
+    rmSync(hostDir, { recursive: true, force: true });
+  }, 10_000);
+
+  it("classifies a nonzero provider exit as dead_provider", async () => {
+    const hostDir = mkdtempSync(join(tmpdir(), "sandcastle-dead-provider-"));
+    const logPath = join(hostDir, "dead-provider.log");
+    await initTestRepo(hostDir);
+
+    const sandbox = makeStreamingRunSandbox(async ({ onLine }) => {
+      onLine?.("provider noise");
+      return {
+        stdout: "provider noise\n",
+        stderr: "provider crashed",
+        exitCode: 17,
+      };
+    });
+
+    await expect(
+      run({
+        agent: claudeCode("claude-opus-4-8"),
+        sandbox,
+        cwd: hostDir,
+        prompt: "test",
+        branchStrategy: { type: "head" },
+        heartbeatIntervalSeconds: 0.05,
+        logging: { type: "file", path: logPath },
+      }),
+    ).rejects.toThrow("[dead_provider]");
+
+    const logOutput = readFileSync(logPath, "utf8");
+    expect(logOutput).toContain("[dead_provider]");
+    rmSync(hostDir, { recursive: true, force: true });
+  });
+
+  it("does not let raw noise reset the visible inactivity timeout", async () => {
+    const hostDir = mkdtempSync(join(tmpdir(), "sandcastle-visible-timeout-"));
+    await initTestRepo(hostDir);
+
+    const sandbox = makeStreamingRunSandbox(async ({ onLine }) => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      onLine?.("raw noise 1");
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      onLine?.("raw noise 2");
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      onLine?.(JSON.stringify({ type: "result", result: "too late" }));
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+
+    await expect(
+      run({
+        agent: claudeCode("claude-opus-4-8"),
+        sandbox,
+        cwd: hostDir,
+        prompt: "test",
+        branchStrategy: { type: "head" },
+        heartbeatIntervalSeconds: 0.05,
+        visibleInactivityTimeoutSeconds: 0.09,
+        idleTimeoutSeconds: 1,
+        logging: { type: "stdout" },
+      }),
+    ).rejects.toThrow("no visible progress");
+
+    rmSync(hostDir, { recursive: true, force: true });
+  }, 10_000);
+
+  it("resets the visible inactivity timeout on text and tool calls", async () => {
+    const hostDir = mkdtempSync(join(tmpdir(), "sandcastle-visible-reset-"));
+    await initTestRepo(hostDir);
+
+    const sandbox = makeStreamingRunSandbox(async ({ onLine }) => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      onLine?.(
+        JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "text", text: "working" }] },
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      onLine?.(
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                name: "Bash",
+                input: { command: "echo hi" },
+              },
+            ],
+          },
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      onLine?.(JSON.stringify({ type: "result", result: "done" }));
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+
+    const result = await run({
+      agent: claudeCode("claude-opus-4-8"),
+      sandbox,
+      cwd: hostDir,
+      prompt: "test",
+      branchStrategy: { type: "head" },
+      heartbeatIntervalSeconds: 0.05,
+      visibleInactivityTimeoutSeconds: 0.09,
+      idleTimeoutSeconds: 1,
+      logging: { type: "stdout" },
+    });
+
+    expect(result.stdout).toContain("done");
+    expect(result.timing?.iterations[0]?.toolRunningMs).toBeGreaterThan(0);
+    rmSync(hostDir, { recursive: true, force: true });
+  }, 10_000);
+
+  it("preserves a dirty worktree on visible inactivity timeout", async () => {
+    const hostDir = mkdtempSync(join(tmpdir(), "sandcastle-preserve-visible-"));
+    await initTestRepo(hostDir);
+
+    const sandbox = makeStreamingRunSandbox(async ({ worktreePath }) => {
+      writeFileSync(join(worktreePath, "dirty.txt"), "dirty");
+      await new Promise((resolve) => setTimeout(resolve, 140));
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+
+    try {
+      await run({
+        agent: claudeCode("claude-opus-4-8"),
+        sandbox,
+        cwd: hostDir,
+        prompt: "test",
+        branchStrategy: { type: "merge-to-head" },
+        visibleInactivityTimeoutSeconds: 0.08,
+        idleTimeoutSeconds: 1,
+        logging: { type: "stdout" },
+      });
+      expect.unreachable("expected visible inactivity timeout");
+    } catch (error) {
+      expect(String(error)).toContain("AgentVisibleInactivityTimeoutError");
+      const timeoutError = error as AgentVisibleInactivityTimeoutError;
+      expect(timeoutError.preservedWorktreePath).toBeDefined();
+      expect(
+        readFileSync(
+          join(timeoutError.preservedWorktreePath!, "dirty.txt"),
+          "utf8",
+        ),
+      ).toBe("dirty");
+    } finally {
+      rmSync(hostDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("returns a compact timing summary", async () => {
+    const hostDir = mkdtempSync(join(tmpdir(), "sandcastle-timing-summary-"));
+    await initTestRepo(hostDir);
+
+    const sandbox = makeStreamingRunSandbox(async ({ onLine }) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      onLine?.(
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                name: "Bash",
+                input: { command: "echo hi" },
+              },
+            ],
+          },
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      onLine?.(
+        JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "text", text: "done" }] },
+        }),
+      );
+      onLine?.(JSON.stringify({ type: "result", result: "done" }));
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+
+    const result = await run({
+      agent: claudeCode("claude-opus-4-8"),
+      sandbox,
+      cwd: hostDir,
+      prompt: "test",
+      branchStrategy: { type: "head" },
+      heartbeatIntervalSeconds: 0.02,
+      visibleInactivityTimeoutSeconds: 0.5,
+      idleTimeoutSeconds: 1,
+      logging: { type: "stdout" },
+    });
+
+    expect(result.timing).toMatchObject({
+      outcome: "success",
+      iterations: [
+        expect.objectContaining({
+          outcome: "success",
+        }),
+      ],
+    });
+    expect(result.timing!.providerWaitMs).toBeGreaterThan(0);
+    expect(result.timing!.toolRunningMs).toBeGreaterThan(0);
+    expect(result.timing!.longestVisibleSilenceMs).toBeGreaterThan(0);
+    expect(result.timing!.totalProviderMs).toBeGreaterThan(0);
+    rmSync(hostDir, { recursive: true, force: true });
+  }, 10_000);
 });
 
 describe("DEFAULT_MAX_ITERATIONS", () => {

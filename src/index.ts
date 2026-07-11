@@ -5,6 +5,7 @@ export type {
   LoggingOption,
   IterationResult,
   IterationUsage,
+  RunTimingSummary,
   Timeouts,
 } from "./run.js";
 export { interactive } from "./interactive.js";
@@ -52,6 +53,7 @@ export type {
   OutputStringDefinition,
 } from "./Output.js";
 export { CwdError } from "./CwdError.js";
+export { AgentVisibleInactivityTimeoutError } from "./errors.js";
 export {
   claudeCode,
   codex,

@@ -76,6 +76,16 @@ export class AgentIdleTimeoutError extends Data.TaggedError(
   readonly preservedWorktreePath?: string;
 }> {}
 
+/** Run exceeded the configured visible inactivity timeout */
+export class AgentVisibleInactivityTimeoutError extends Data.TaggedError(
+  "AgentVisibleInactivityTimeoutError",
+)<{
+  readonly message: string;
+  readonly timeoutMs: number;
+  /** Host path to the preserved worktree, set when the worktree was kept after failure. */
+  readonly preservedWorktreePath?: string;
+}> {}
+
 /** Git worktree create or prune timed out */
 export class WorktreeTimeoutError extends Data.TaggedError(
   "WorktreeTimeoutError",
@@ -207,6 +217,7 @@ export type SandboxError =
   | ConfigDirError
   | InitError
   | AgentIdleTimeoutError
+  | AgentVisibleInactivityTimeoutError
   | WorktreeTimeoutError
   | ContainerStartTimeoutError
   | CopyToWorktreeTimeoutError
