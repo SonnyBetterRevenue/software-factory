@@ -389,7 +389,7 @@ describe("visible progress heartbeats and timing", () => {
     rmSync(hostDir, { recursive: true, force: true });
   });
 
-  it("does not let raw noise reset the visible inactivity timeout", async () => {
+  it("does not let raw noise or result events reset the visible inactivity timeout", async () => {
     const hostDir = mkdtempSync(join(tmpdir(), "sandcastle-visible-timeout-"));
     await initTestRepo(hostDir);
 
@@ -400,6 +400,7 @@ describe("visible progress heartbeats and timing", () => {
       onLine?.("raw noise 2");
       await new Promise((resolve) => setTimeout(resolve, 40));
       onLine?.(JSON.stringify({ type: "result", result: "too late" }));
+      await new Promise((resolve) => setTimeout(resolve, 80));
       return { stdout: "", stderr: "", exitCode: 0 };
     });
 

@@ -289,11 +289,6 @@ const invokeAgent = (
               onText(parsed.text);
               accumulatedOutput += parsed.text;
             } else if (parsed.type === "result") {
-              const nowMs = Date.now();
-              setState("provider_wait", nowMs);
-              lastVisibleEventAtMs = nowMs;
-              updateLongestVisibleSilence(nowMs);
-              resetVisibleTimeout();
               resultText = parsed.result;
               accumulatedOutput += parsed.result;
             } else if (parsed.type === "tool_call") {

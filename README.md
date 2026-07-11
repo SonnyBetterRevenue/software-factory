@@ -251,7 +251,7 @@ const result = await run({
   heartbeatIntervalSeconds: 30,
 
   // Timeout visible inactivity only. Resets on parsed text and tool calls,
-  // but not on raw provider noise. Disabled by default.
+  // but not on raw provider noise or terminal result events. Disabled by default.
   visibleInactivityTimeoutSeconds: 180,
 
   // Structured output — extract a typed payload from the agent's stdout.
