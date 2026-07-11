@@ -1,7 +1,13 @@
 import * as path from "node:path";
-import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
-import { claudeAgent, fail, required, safeSh, sh } from "../shared/common";
+import {
+  factoryRunOptions,
+  fail,
+  required,
+  runFactoryAgent,
+  safeSh,
+  sh,
+} from "../shared/common";
 
 const ISSUE_NUMBER = required("ISSUE_NUMBER");
 const ISSUE_TITLE = required("ISSUE_TITLE");
@@ -12,9 +18,9 @@ try {
     safeSh(`gh issue view ${ISSUE_NUMBER} --comments`) ||
     `Issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}`;
 
-  const result = await sandcastle.run({
+  const result = await runFactoryAgent({
     name: `implement-#${ISSUE_NUMBER}`,
-    agent: claudeAgent(),
+    ...factoryRunOptions(),
     sandbox: noSandbox(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),

@@ -3,7 +3,7 @@ import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
-  claudeAgent,
+  factoryRunOptions,
   fail,
   required,
   writeJson,
@@ -25,7 +25,7 @@ try {
 
   const result = await runWithExtraction({
     name: `implement-pr-${PR_NUMBER}`,
-    agent: claudeAgent(),
+    ...factoryRunOptions(),
     sandbox: noSandbox(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),

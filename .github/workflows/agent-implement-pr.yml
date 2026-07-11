@@ -66,14 +66,14 @@ jobs:
         if: github.event.pull_request.state == 'open'
         run: npm run build
 
-      - name: Install Claude Code
+      - name: Install Codex
         if: github.event.pull_request.state == 'open'
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @openai/codex@0.143.0
 
       - name: Run implement-PR agent
         if: github.event.pull_request.state == 'open'
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CODEX_AUTH_JSON_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: npx tsx .sandcastle/agent-workflows/implement-pr/implement-pr.ts
 

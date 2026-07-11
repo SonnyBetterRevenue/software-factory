@@ -15,6 +15,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get update && apt-get install -y gh \
   && rm -rf /var/lib/apt/lists/*
 
+# Install Codex CLI before switching to the non-root agent user.
+RUN npm install -g @openai/codex@0.143.0
+
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files
 # and bind-mounted files share an owner without runtime chown.
@@ -24,12 +27,6 @@ ARG AGENT_GID=1000
 # Rename the base image's "node" user to "agent" and align UID/GID.
 RUN groupmod -o -g $AGENT_GID node && usermod -o -u $AGENT_UID -g $AGENT_GID -d /home/agent -m -l agent node
 USER ${AGENT_UID}:${AGENT_GID}
-
-# Install Claude Code CLI
-RUN curl -fsSL https://claude.ai/install.sh | bash
-
-# Add Claude to PATH
-ENV PATH="/home/agent/.local/bin:$PATH"
 
 WORKDIR /home/agent
 

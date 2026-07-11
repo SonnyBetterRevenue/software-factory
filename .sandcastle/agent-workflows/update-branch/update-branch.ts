@@ -6,7 +6,7 @@ import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   asRecord,
   asString,
-  claudeAgent,
+  factoryRunOptions,
   fail,
   required,
   sh,
@@ -66,7 +66,7 @@ try {
 
   const result = await runWithExtraction({
     name: `update-branch-pr-${PR_NUMBER}`,
-    agent: claudeAgent(),
+    ...factoryRunOptions(),
     sandbox: noSandbox(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),

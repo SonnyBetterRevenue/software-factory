@@ -54,12 +54,12 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+      - name: Install Codex
+        run: npm install -g @openai/codex@0.143.0
 
       - name: Run review agent
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CODEX_AUTH_JSON_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
           OUTPUT_DIR: ${{ runner.temp }}
         run: npx tsx .sandcastle/agent-workflows/review/review.ts
 

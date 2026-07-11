@@ -1,9 +1,9 @@
 import {
-  run,
   type OutputObjectDefinition,
   type RunOptions,
   type RunResult,
 } from "@ai-hero/sandcastle";
+import { runFactoryAgent } from "./common";
 
 export interface RunWithExtractionOptions<T> extends Omit<
   RunOptions,
@@ -29,7 +29,7 @@ export async function runWithExtraction<T>(
     maxRetries = 2,
     ...produceOptions
   } = options;
-  const produce = await run(produceOptions);
+  const produce = await runFactoryAgent(produceOptions);
   const sessionId = produce.iterations.at(-1)?.sessionId;
 
   if (!sessionId) {
@@ -39,7 +39,7 @@ export async function runWithExtraction<T>(
   }
 
   const { promptArgs: _promptArgs, ...extractionOptions } = produceOptions;
-  const extraction = await run({
+  const extraction = await runFactoryAgent({
     ...extractionOptions,
     name: produceOptions.name ? `${produceOptions.name} (extract)` : undefined,
     promptFile: undefined,
