@@ -4,6 +4,7 @@ export type {
   RunResult,
   LoggingOption,
   IterationResult,
+  IterationTimingSummary,
   IterationUsage,
   RunTimingSummary,
   Timeouts,

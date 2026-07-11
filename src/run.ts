@@ -15,6 +15,7 @@ import {
 import {
   orchestrate,
   type IterationResult,
+  type IterationTimingSummary,
   type IterationUsage,
   type OrchestrateResult,
   type RunTimingSummary,
@@ -435,7 +436,10 @@ export interface RunOptions<A extends AgentProvider = AgentProvider> {
 }
 
 export type { IterationResult, IterationUsage } from "./Orchestrator.js";
-export type { RunTimingSummary } from "./Orchestrator.js";
+export type {
+  IterationTimingSummary,
+  RunTimingSummary,
+} from "./Orchestrator.js";
 
 export type ResumeRunResultOptions = Omit<
   RunOptions,
