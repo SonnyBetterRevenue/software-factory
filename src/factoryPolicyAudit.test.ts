@@ -98,6 +98,7 @@ describe("active Software Factory Codex policy", () => {
     const source = read("src/factory-policy.ts");
     const packageJson = JSON.parse(read("package.json")) as {
       exports: Record<string, unknown>;
+      scripts: Record<string, string>;
     };
 
     expect(common.trim()).toBe(
@@ -114,6 +115,7 @@ describe("active Software Factory Codex policy", () => {
         types: "./dist/factory-policy.d.ts",
       },
     });
+    expect(packageJson.scripts.prepare).toBe("husky && npm run build");
 
     for (const route of activeRoutes) {
       const contents = read(route);
