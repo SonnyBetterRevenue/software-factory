@@ -27,7 +27,7 @@ import {
 import { claudeCode, cursor, opencode } from "./AgentProvider.js";
 import { Output, StructuredOutputError } from "./Output.js";
 import { claudeHostSessionPath } from "./SessionStore.js";
-import { AgentVisibleInactivityTimeoutError } from "./errors.js";
+import { AgentVisibleInactivityTimeoutError, InitError } from "./errors.js";
 import type { InteractiveOptions } from "./interactive.js";
 import type { WorktreeInteractiveOptions } from "./createWorktree.js";
 import { defaultImageName } from "./sandboxes/docker.js";
@@ -469,6 +469,46 @@ describe("visible progress heartbeats and timing", () => {
     rmSync(hostDir, { recursive: true, force: true });
   }, 10_000);
 
+  it("does not let visible inactivity beat completion timeout after completion is observed", async () => {
+    const hostDir = mkdtempSync(join(tmpdir(), "sandcastle-completion-grace-"));
+    await initTestRepo(hostDir);
+
+    const sandbox = makeStreamingRunSandbox(async ({ onLine }) => {
+      onLine?.(
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "text",
+                text: "done <promise>COMPLETE</promise>",
+              },
+            ],
+          },
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 140));
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+
+    const result = await run({
+      agent: claudeCode("claude-opus-4-8"),
+      sandbox,
+      cwd: hostDir,
+      prompt: "test",
+      branchStrategy: { type: "head" },
+      heartbeatIntervalSeconds: 0.05,
+      visibleInactivityTimeoutSeconds: 0.08,
+      completionTimeoutSeconds: 0.12,
+      idleTimeoutSeconds: 1,
+      logging: { type: "stdout" },
+    });
+
+    expect(result.completionSignal).toBe("<promise>COMPLETE</promise>");
+    expect(result.timing?.iterations[0]?.outcome).toBe("completion_timeout");
+    rmSync(hostDir, { recursive: true, force: true });
+  }, 10_000);
+
   it("preserves a dirty worktree on visible inactivity timeout", async () => {
     const hostDir = mkdtempSync(join(tmpdir(), "sandcastle-preserve-visible-"));
     await initTestRepo(hostDir);
@@ -563,6 +603,62 @@ describe("visible progress heartbeats and timing", () => {
     expect(result.timing!.totalProviderMs).toBeGreaterThan(0);
     rmSync(hostDir, { recursive: true, force: true });
   }, 10_000);
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid heartbeatIntervalSeconds: %s",
+    async (heartbeatIntervalSeconds) => {
+      const hostDir = mkdtempSync(join(tmpdir(), "sandcastle-bad-heartbeat-"));
+      await initTestRepo(hostDir);
+
+      try {
+        await expect(
+          run({
+            agent: claudeCode("claude-opus-4-8"),
+            sandbox: makeStreamingRunSandbox(async () => ({
+              stdout: "",
+              stderr: "",
+              exitCode: 0,
+            })),
+            cwd: hostDir,
+            prompt: "test",
+            branchStrategy: { type: "head" },
+            heartbeatIntervalSeconds,
+            logging: { type: "stdout" },
+          }),
+        ).rejects.toBeInstanceOf(InitError);
+      } finally {
+        rmSync(hostDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid visibleInactivityTimeoutSeconds: %s",
+    async (visibleInactivityTimeoutSeconds) => {
+      const hostDir = mkdtempSync(join(tmpdir(), "sandcastle-bad-visible-"));
+      await initTestRepo(hostDir);
+
+      try {
+        await expect(
+          run({
+            agent: claudeCode("claude-opus-4-8"),
+            sandbox: makeStreamingRunSandbox(async () => ({
+              stdout: "",
+              stderr: "",
+              exitCode: 0,
+            })),
+            cwd: hostDir,
+            prompt: "test",
+            branchStrategy: { type: "head" },
+            visibleInactivityTimeoutSeconds,
+            logging: { type: "stdout" },
+          }),
+        ).rejects.toBeInstanceOf(InitError);
+      } finally {
+        rmSync(hostDir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("DEFAULT_MAX_ITERATIONS", () => {

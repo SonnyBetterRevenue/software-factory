@@ -4124,4 +4124,69 @@ describe("Orchestrator completion timeout (hanging process)", () => {
       warnEntries.some((e) => /hang|completion timeout/i.test(e.message)),
     ).toBe(true);
   }, 10_000);
+
+  it("keeps a nonzero provider exit as dead_provider when it lands just before the grace boundary", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-comp-dead-provider-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) => {
+      const real = makeLocalSandbox(dir);
+      return {
+        exec: (command, options) => {
+          if (command.startsWith("claude ") && options?.onLine) {
+            const onLine = options.onLine;
+            return Effect.gen(function* () {
+              onLine(
+                JSON.stringify({
+                  type: "assistant",
+                  message: {
+                    content: [
+                      {
+                        type: "text",
+                        text: "Final answer <promise>COMPLETE</promise>",
+                      },
+                    ],
+                  },
+                }),
+              );
+              yield* Effect.promise(
+                () => new Promise((resolve) => setTimeout(resolve, 90)),
+              );
+              return {
+                stdout: "provider noise\n",
+                stderr: "provider crashed after completion",
+                exitCode: 17,
+              };
+            });
+          }
+          return real.exec(command, options);
+        },
+        copyIn: (hostPath, sandboxPath) => real.copyIn(hostPath, sandboxPath),
+        copyFileOut: (sandboxPath, hostPath) =>
+          real.copyFileOut(sandboxPath, hostPath),
+      };
+    });
+
+    const exitResult = await Effect.runPromise(
+      orchestrate({
+        provider: testProvider,
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+        completionTimeoutSeconds: 0.1,
+        idleTimeoutSeconds: 30,
+      }).pipe(
+        Effect.provide(Layer.merge(factoryLayer, testDisplayLayer)),
+        Effect.exit,
+      ),
+    );
+
+    expect(exitResult._tag).toBe("Failure");
+    if (exitResult._tag === "Failure") {
+      const err = Cause.squash(exitResult.cause);
+      expect(err).toBeInstanceOf(AgentError);
+      expect(String(err)).toContain("[dead_provider]");
+    }
+  }, 10_000);
 });

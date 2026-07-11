@@ -6,6 +6,7 @@ import {
   AgentError,
   AgentIdleTimeoutError,
   AgentVisibleInactivityTimeoutError,
+  InitError,
   SessionCaptureError,
 } from "./errors.js";
 import type { SandboxError } from "./errors.js";
@@ -83,8 +84,6 @@ const invokeAgent = (
     >();
     let timeoutFiber: Fiber.RuntimeFiber<unknown, unknown> | null = null;
     let completionDetected = false;
-    let completionTimeoutTriggered = false;
-
     // Periodic idle warning state
     let warningFiber: Fiber.RuntimeFiber<unknown, unknown> | null = null;
     let idleMinuteCounter = 0;
@@ -185,7 +184,9 @@ const invokeAgent = (
 
     const resetVisibleTimeout = () => {
       interruptFiber(visibleTimeoutFiber);
+      visibleTimeoutFiber = null;
       if (visibleInactivityTimeoutMs === undefined) return;
+      if (completionDetected) return;
       visibleTimeoutFiber = Effect.runFork(
         Effect.gen(function* () {
           yield* Effect.sleep(Duration.millis(visibleInactivityTimeoutMs));
@@ -211,7 +212,6 @@ const invokeAgent = (
           Effect.gen(function* () {
             yield* Effect.sleep(Duration.millis(completionTimeoutMs));
             outcome = "completion_timeout";
-            completionTimeoutTriggered = true;
             onCompletionTimeout(completionTimeoutMs);
             yield* Deferred.succeed(completionTimeoutDeferred, {
               result: resultText || accumulatedOutput,
@@ -289,6 +289,11 @@ const invokeAgent = (
               onText(parsed.text);
               accumulatedOutput += parsed.text;
             } else if (parsed.type === "result") {
+              const nowMs = Date.now();
+              setState("provider_wait", nowMs);
+              lastVisibleEventAtMs = nowMs;
+              updateLongestVisibleSilence(nowMs);
+              resetVisibleTimeout();
               resultText = parsed.result;
               accumulatedOutput += parsed.result;
             } else if (parsed.type === "tool_call") {
@@ -314,6 +319,8 @@ const invokeAgent = (
             completionDetected = true;
             interruptFiber(warningFiber);
             warningFiber = null;
+            interruptFiber(visibleTimeoutFiber);
+            visibleTimeoutFiber = null;
           }
           resetTimer();
         },
@@ -379,16 +386,6 @@ const invokeAgent = (
     }
 
     return yield* raced.pipe(
-      Effect.catchTag("AgentError", (error) =>
-        completionTimeoutTriggered
-          ? Effect.succeed({
-              result: resultText || accumulatedOutput,
-              sessionId,
-              usage,
-              timing: buildTimingSummary(),
-            })
-          : Effect.fail(error),
-      ),
       Effect.ensuring(
         Effect.sync(() => {
           abortCleanup?.();
@@ -523,6 +520,29 @@ export const orchestrate = (
       ? undefined
       : options.visibleInactivityTimeoutSeconds * 1000;
   return Effect.gen(function* () {
+    if (
+      options.heartbeatIntervalSeconds !== undefined &&
+      (!Number.isFinite(options.heartbeatIntervalSeconds) ||
+        options.heartbeatIntervalSeconds <= 0)
+    ) {
+      return yield* Effect.fail(
+        new InitError({
+          message: "heartbeatIntervalSeconds must be a finite positive number.",
+        }),
+      );
+    }
+    if (
+      options.visibleInactivityTimeoutSeconds !== undefined &&
+      (!Number.isFinite(options.visibleInactivityTimeoutSeconds) ||
+        options.visibleInactivityTimeoutSeconds <= 0)
+    ) {
+      return yield* Effect.fail(
+        new InitError({
+          message:
+            "visibleInactivityTimeoutSeconds must be a finite positive number.",
+        }),
+      );
+    }
     const factory = yield* SandboxFactory;
     const display = yield* Display;
     const streamEmitter = yield* AgentStreamEmitter;

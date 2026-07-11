@@ -53,7 +53,7 @@ export type {
   OutputStringDefinition,
 } from "./Output.js";
 export { CwdError } from "./CwdError.js";
-export { AgentVisibleInactivityTimeoutError } from "./errors.js";
+export { AgentVisibleInactivityTimeoutError } from "./AgentVisibleInactivityTimeoutError.js";
 export {
   claudeCode,
   codex,

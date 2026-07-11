@@ -927,6 +927,46 @@ describe("worktree.run()", () => {
     }
   });
 
+  it("worktree.run() forwards heartbeat and visible inactivity options and returns timing", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "ws-run-heartbeat-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "init.txt", "init", "initial commit");
+    const logPath = join(hostDir, "worktree-heartbeat.log");
+    const streamEvents: string[] = [];
+
+    const sandbox = makeRunTestProvider(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 160));
+      return "done";
+    });
+
+    const ws = await createWorktree({
+      branchStrategy: { type: "branch", branch: "heartbeat-run-test" },
+      cwd: hostDir,
+    });
+
+    try {
+      const result = await ws.run({
+        agent: claudeCode("claude-opus-4-8"),
+        sandbox,
+        prompt: "create a file",
+        heartbeatIntervalSeconds: 0.05,
+        visibleInactivityTimeoutSeconds: 0.5,
+        logging: {
+          type: "file",
+          path: logPath,
+          onAgentStreamEvent: (event) => streamEvents.push(event.type),
+        },
+      });
+
+      expect(streamEvents).toContain("heartbeat");
+      expect(result.timing?.heartbeatCount).toBeGreaterThan(0);
+      expect(result.timing?.iterations[0]?.outcome).toBe("success");
+    } finally {
+      await ws.close();
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
   it("merge-to-head: agent commits advance host's current branch", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "ws-run-mth-"));
     await initRepo(hostDir);

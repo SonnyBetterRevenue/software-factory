@@ -1141,6 +1141,48 @@ describe("createSandbox", () => {
     }
   });
 
+  it("sandbox.run() forwards heartbeat and visible inactivity options and returns timing", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandbox-test-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "init.txt", "init", "initial commit");
+    const logPath = join(hostDir, "sandbox-heartbeat.log");
+    const streamEvents: string[] = [];
+
+    const sandbox = await createSandbox({
+      branch: "test-heartbeat-parity",
+      sandbox: testSandbox,
+      cwd: hostDir,
+      _test: {
+        buildSandbox: (sandboxDir) =>
+          makeMockAgentLayer(sandboxDir, async () => {
+            await new Promise((resolve) => setTimeout(resolve, 160));
+            return "done";
+          }),
+      },
+    });
+
+    try {
+      const result = await sandbox.run({
+        agent: testProvider,
+        prompt: "create a file",
+        heartbeatIntervalSeconds: 0.05,
+        visibleInactivityTimeoutSeconds: 0.5,
+        logging: {
+          type: "file",
+          path: logPath,
+          onAgentStreamEvent: (event) => streamEvents.push(event.type),
+        },
+      });
+
+      expect(streamEvents).toContain("heartbeat");
+      expect(result.timing?.heartbeatCount).toBeGreaterThan(0);
+      expect(result.timing?.iterations[0]?.outcome).toBe("success");
+    } finally {
+      await sandbox.close();
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
   it("sandbox.close() is idempotent", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "sandbox-test-"));
     await initRepo(hostDir);
