@@ -104,8 +104,10 @@ describe("active Software Factory Codex policy", () => {
     expect(common.trim()).toBe(
       'export * from "../../../src/factory-policy.js";',
     );
-    expect(source).toContain('FACTORY_MODEL = "gpt-5.5"');
-    expect(source).toContain('FACTORY_EFFORT = "low"');
+    expect(source).toContain('model: "gpt-5.5"');
+    expect(source).toContain('effort: "low"');
+    expect(source).toContain("FACTORY_MODEL = FACTORY_WORKER.model");
+    expect(source).toContain("FACTORY_EFFORT = FACTORY_WORKER.effort");
     expect(source).toContain("sandcastle.codex(FACTORY_MODEL");
     expect(source).toContain("FACTORY_HEARTBEAT_SECONDS = 30");
     expect(source).toContain("FACTORY_VISIBLE_INACTIVITY_SECONDS = 60");
@@ -451,5 +453,70 @@ describe("active Software Factory Codex policy", () => {
     exit.mockRestore();
     error.mockRestore();
     rmSync(outputDir, { recursive: true, force: true });
+  });
+});
+
+describe("factory operator/worker engine specs (issue-61 atom A)", () => {
+  const aliasesAreDerived = (source: string): boolean =>
+    /export const FACTORY_MODEL = FACTORY_WORKER\.model;/.test(source) &&
+    /export const FACTORY_EFFORT = FACTORY_WORKER\.effort;/.test(source) &&
+    /export const FACTORY_CODEX_AUTH_ENV = FACTORY_WORKER\.authEnv;/.test(
+      source,
+    );
+
+  const expectValidSpec = (spec: {
+    engine: string;
+    model: string;
+    effort: string;
+    command: readonly string[];
+    authEnv: string;
+  }) => {
+    expect(["codex", "claude"]).toContain(spec.engine);
+    expect(typeof spec.model).toBe("string");
+    expect(spec.model.length).toBeGreaterThan(0);
+    expect(["low", "medium", "high"]).toContain(spec.effort);
+    expect(Array.isArray(spec.command)).toBe(true);
+    expect(spec.command.length).toBeGreaterThan(0);
+    for (const part of spec.command) {
+      expect(typeof part).toBe("string");
+    }
+    expect(typeof spec.authEnv).toBe("string");
+    expect(spec.authEnv.length).toBeGreaterThan(0);
+  };
+
+  it("exports both FACTORY_OPERATOR and FACTORY_WORKER engine specs", async () => {
+    const { FACTORY_OPERATOR, FACTORY_WORKER } = await importCommon();
+    expect(FACTORY_OPERATOR).toBeDefined();
+    expect(FACTORY_WORKER).toBeDefined();
+    expectValidSpec(FACTORY_OPERATOR);
+    expectValidSpec(FACTORY_WORKER);
+  });
+
+  it("keeps FACTORY_MODEL/FACTORY_EFFORT/FACTORY_CODEX_AUTH_ENV as derived aliases of FACTORY_WORKER, not duplicated literals", async () => {
+    const {
+      FACTORY_MODEL,
+      FACTORY_EFFORT,
+      FACTORY_CODEX_AUTH_ENV,
+      FACTORY_WORKER,
+    } = await importCommon();
+
+    expect(FACTORY_MODEL).toBe(FACTORY_WORKER.model);
+    expect(FACTORY_EFFORT).toBe(FACTORY_WORKER.effort);
+    expect(FACTORY_CODEX_AUTH_ENV).toBe(FACTORY_WORKER.authEnv);
+
+    const source = read("src/factory-policy.ts");
+    expect(aliasesAreDerived(source)).toBe(true);
+  });
+
+  it("fails the derived-alias check if an alias is hardcoded again (regression guard, no false PASS)", () => {
+    const source = read("src/factory-policy.ts");
+    expect(aliasesAreDerived(source)).toBe(true);
+
+    const regressed = source.replace(
+      "export const FACTORY_MODEL = FACTORY_WORKER.model;",
+      'export const FACTORY_MODEL = "gpt-5.5";',
+    );
+    expect(regressed).not.toBe(source);
+    expect(aliasesAreDerived(regressed)).toBe(false);
   });
 });

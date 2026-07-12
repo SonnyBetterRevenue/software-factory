@@ -54,21 +54,44 @@ export const writeText = (filename: string, value: string): void => {
   fs.writeFileSync(path.join(outputDir(), filename), value);
 };
 
-export const FACTORY_MODEL = "gpt-5.5";
-export const FACTORY_EFFORT = "low";
-export const FACTORY_CODEX_AUTH_ENV = "CODEX_AUTH_JSON_B64";
+export interface FactoryEngineSpec {
+  readonly engine: "codex" | "claude";
+  readonly model: string;
+  readonly effort: "low" | "medium" | "high";
+  /** Headless invocation, prompt on stdin, e.g. ["codex", "exec"] or ["claude", "-p"] */
+  readonly command: readonly string[];
+  /** Env var holding the credential; the value is NEVER read by policy code */
+  readonly authEnv: string;
+}
+
+export const FACTORY_OPERATOR: FactoryEngineSpec = {
+  engine: "codex",
+  model: "gpt-5.5",
+  effort: "low",
+  command: ["codex", "exec"],
+  authEnv: "CODEX_AUTH_JSON_B64",
+};
+
+export const FACTORY_WORKER: FactoryEngineSpec = {
+  engine: "codex",
+  model: "gpt-5.5",
+  effort: "low",
+  command: ["codex", "exec"],
+  authEnv: "CODEX_AUTH_JSON_B64",
+};
+
+export const FACTORY_MODEL = FACTORY_WORKER.model;
+export const FACTORY_EFFORT = FACTORY_WORKER.effort;
+export const FACTORY_CODEX_AUTH_ENV = FACTORY_WORKER.authEnv;
 export const FACTORY_HEARTBEAT_SECONDS = 30;
 export const FACTORY_VISIBLE_INACTIVITY_SECONDS = 60;
 
-export const factoryDocker = () =>
-  docker({
-    env:
-      process.env[FACTORY_CODEX_AUTH_ENV] === undefined
-        ? {}
-        : {
-            [FACTORY_CODEX_AUTH_ENV]: process.env[FACTORY_CODEX_AUTH_ENV],
-          },
+export const factoryDocker = () => {
+  const authValue = process.env[FACTORY_CODEX_AUTH_ENV];
+  return docker({
+    env: authValue === undefined ? {} : { [FACTORY_CODEX_AUTH_ENV]: authValue },
   });
+};
 
 export const materializeCodexAuthCommand = (): string => `
 set -eu
