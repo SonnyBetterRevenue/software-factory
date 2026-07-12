@@ -1,5 +1,20 @@
 # @ai-hero/sandcastle
 
+## 0.13.0
+
+### Minor Changes
+
+- 4e0791f: Add public heartbeat events and timing summaries for `run()`, plus a visible inactivity timeout that ignores raw provider noise.
+
+### Patch Changes
+
+- 8602a62: Keep terminal `result` events out of visible-progress detection so visible inactivity still times out unless the agent emits externally visible text, tool activity, or a completion signal.
+- 4449f14: Propagate Codex auth into Factory Docker sandboxes and always report a concrete preserved worktree path after repeated Factory inactivity timeouts.
+- c40a9aa: Move active Software Factory routes, Dockerfile, and GitHub workflows to Codex gpt-5.5 with pinned CLI install, CODEX_AUTH_JSON_B64 authentication, shared liveness policy, Factory Docker execution for active GitHub Actions agents, and one visible-inactivity retry in the preserved worktree.
+- 5c3dde1: Publish the Software Factory policy helpers as `@ai-hero/sandcastle/factory-policy`, and build `dist` during `prepare` so exact Git-commit consumers can import the subpath.
+- f7b2fe1: Fix completion-timeout and visible-inactivity edge cases, validate heartbeat and visible-inactivity timer values, and restore `createSandbox().run()` / `createWorktree().run()` timing-option parity with `run()`.
+- 22575e6: Add committed `FACTORY_OPERATOR` and `FACTORY_WORKER` engine specs (`FactoryEngineSpec`) to `factory-policy`, replacing the hardcoded single-engine assumption. `FACTORY_MODEL`, `FACTORY_EFFORT`, and `FACTORY_CODEX_AUTH_ENV` remain as aliases derived from `FACTORY_WORKER` so existing consumers are unaffected.
+
 ## 0.12.0
 
 ### Minor Changes
