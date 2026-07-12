@@ -10,6 +10,10 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
+    "./factory-policy": {
+      "import": "./dist/factory-policy.js",
+      "types": "./dist/factory-policy.d.ts"
+    },
     "./sandboxes/docker": {
       "import": "./dist/sandboxes/docker.js",
       "types": "./dist/sandboxes/docker.d.ts"
@@ -42,7 +46,7 @@
     "typecheck": "tsgo --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepare": "husky",
+    "prepare": "husky && npm run build",
     "release": "changeset publish",
     "sandcastle": "npm run build && tsx .sandcastle/run.ts",
     "test-podman": "npm run build && tsx --env-file=.sandcastle/.env .sandcastle/test-podman.ts",
@@ -59,7 +63,7 @@
   "packageManager": "npm@10.9.2",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mattpocock/sandcastle"
+    "url": "https://github.com/SonnyBetterRevenue/software-factory"
   },
   "license": "MIT",
   "devDependencies": {
